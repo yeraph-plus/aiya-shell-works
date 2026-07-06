@@ -1,264 +1,202 @@
 # Shell Worker Platform
 
-模块化工作流平台，通过 YAML 编排步骤模块，对文件或文本输入执行批量处理、自动化任务。
+按**单向管道**模型设计的模块化批量任务工作流平台，通过 YAML 编排步骤，对文件或文本输入执行批量处理、自动化任务。CLI 驱动，可选桌面 GUI，跨平台。
+
+```mermaid
+flowchart LR
+    A["📂 --files / 📝 --lines"] --> B[InputPlan]
+    C[📋 Workflow YAML] --> D[WorkflowDefinition]
+    B --> E[PipelineExecutor]
+    D --> E
+    E --> F{scope?}
+    F -->|1: per-unit| G["单元 A, B, C …<br/>每单元独立上下文"]
+    F -->|0: shared| H["合并树 → 单上下文<br/>一次执行"]
+    G --> I[run step₁ → step₂ → …]
+    H --> I
+    I --> J[📦 output_dir]
+```
 
 ---
 
-## 项目设计
-
-### 核心理念
-
-Shell Worker Platform 按**单向管道**模型设计：输入 → 复制到安全目录 → 逐模块处理 → 输出。GUI 与内核完全解耦，内核可脱离桌面环境独立调用。
-
-```
-YAML 文件 ──► WorkflowLoader.load() ──► WorkflowDefinition ──► PipelineExecutor.execute()
-                                                                        │
-File Paths ──► FileHandler.prepare_context() ──► ──────────────────────┤
-Text Lines ──► InputHandler.prepare_context()                           │
-                                                                        ▼
-                                                                 _build_units()
-                                                                 _prepare_context()
-                                                                        │
-                                                                        ▼
-                                                                  PipelineContext
-                                                                        │
-                                                                        ▼
-                                                                  Module.run(ctx, config)
-                                                                        │
-                                                           ┌────────────┼────────────┐
-                                                           ▼            ▼            ▼
-                                                     ctx.clone()  ctx.events.log  ctx.run_command()
-                                                           │            │            │
-                                                           ▼            ▼            ▼
-                                                      [下一步骤]   事件总线/GUI    TerminalWindow
-                                                                                   (PTY 子进程)
-```
-
-### 五种工作流模式
-
-| 模式 | 输入 | 单元 = ? | 典型场景 |
-|------|------|----------|----------|
-| `file` | 文件或文件夹 | 每个文件 | 批量重命名、格式转换、元数据清理 |
-| `folder` | 单个文件夹 | 整个文件夹 | 结构重组、Gallery 编排 |
-| `none` | 无输入 | 1 个空单元 | 报告/配置生成 |
-| `cycle` | 文件或文件夹 | 每个文件（共享状态） | 跨文件统计、计数聚合 |
-| `input` | 多行文本 | 每行 | 逐行 API 调用、批量 URL |
-
----
-
-## 内核设计
-
-### 分层架构
-
-```
-用户 ──► GUI 层 ──► Core 内核层 ──► Module 模块层 ──► External Tools 外部工具
-
-         MainWindow           executor               modules/*            resources/
-         WorkflowEditor       pipeline               MODULE_META          exiftool.exe
-         DynamicForm          handler_file           CONFIG_SCHEMA        ffmpeg.exe
-         TerminalWindow       handler_input          run(ctx, config)     VapourSynth
-         DropZone             terminal               (21 个模块)           WinRAR
-         ExecutionWorker      module_manager
-                              workflow_loader
-                              config_schema
-                              input_inspector
-```
-
-### 关键类型
-
-| 类型 | 文件 | 说明 |
-|------|------|------|
-| `PipelineContext` | `core/pipeline.py` | 每单元的处理上下文，步骤间流转 |
-| `PipelineEventBus` | `core/pipeline.py` | 每单元的事件总线，结构化日志 |
-| `FileHandler` | `core/handler_file.py` | 安全文件拷贝/直写 |
-| `InputHandler` | `core/handler_input.py` | 文本输入构建 |
-| `InputInspector` | `core/input_inspector.py` | 输入路径校验 |
-| `TerminalSession` | `core/terminal.py` | PTY 子进程封装 |
-| `ModuleDefinition` | `core/module_manager.py` | 已验证模块 |
-| `WorkflowDefinition` | `core/workflow_loader.py` | 已验证工作流 |
-| `WorkflowValidationResult` | `core/workflow_loader.py` | 工作流校验结果（含 errors 与 parsed workflow） |
-
----
-
-## 使用方法
-
-### 环境要求
-
-- Python 3.11+
-- Windows (PySide6 + pywinpty 支持)
-
-### 安装
+## 安装
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt     # 内核 + CLI（仅 PyYAML）
+pip install '.[gui]'                # + PySide6 桌面 GUI
+pip install '.[win]'                # + pywinpty（Windows PTY）
 ```
 
-### 启动桌面应用
+Linux / macOS 上 CLI 零 GUI 依赖，PTY 由 stdlib 提供。
+
+## 快速开始
 
 ```bash
-python main.py
+# 1. 查看可用工作流和模块
+python main_cli.py --list-workflows
+python main_cli.py --list-modules
+
+# 2. 无输入创建文件（atom=none）
+python main_cli.py example-create.yaml --output-dir ./out
+# → out/hello.txt
+
+# 3. 批量重命名文件（atom=file, recurse=true）
+python main_cli.py example-file-rename.yaml \
+  --files ./my_data --recurse --output-dir ./out
+# → 每个文件被安全拷贝后重命名，保留相对目录结构
+
+# 4. 整个文件夹作为单元（atom=folder）
+python main_cli.py example-folder-rename.yaml \
+  --files ./my_folder --output-dir ./out
+# → 文件夹整体作为一个任务，拷贝后重命名
+
+# 5. 合并计数（atom=file, scope=0）
+python main_cli.py example-cycle-count.yaml \
+  --files ./my_data --recurse --output-dir ./out
+# → 所有文件合并到产物目录，运行一次，输出 count.txt
+
+# 6. 逐行处理文本（atom=line）
+python main_cli.py example-line-echo.yaml \
+  --lines "alpha"$'\n'"beta" --output-dir ./out
+# → 每行作为一个独立任务
+
+# 7. 调用外部工具
+python main_cli.py example-external-tool.yaml \
+  --files ./input --recurse --output-dir ./out
 ```
 
-主界面支持拖拽或浏览添加输入文件/文件夹，选择工作流后点击执行。
+## 核心模型
 
-### 创建工作流
+每个工作流由三个正交参数控制执行行为：
 
-通过内置编辑器新建或直接编写 YAML：
+```
+atom       输入粒度       file / folder / line / none
+scope      分发策略       0 (共享) / 1 (独立)
+recurse    目录展开       true / false (仅 atom=file 时有效)
+```
+
+```mermaid
+flowchart TD
+    INPUT["用户输入"] -->|--files| FILES["路径列表"]
+    INPUT -->|--lines| LINES["文本行"]
+    INPUT -->|无| NONE["空输入"]
+
+    FILES --> RECURSE{--recurse?}
+    RECURSE -->|true| EXPAND["每个文件 → 一个单元<br/>保留 source_root"]
+    RECURSE -->|false| WHOLE["目录整体 → 一个单元"]
+
+    LINES --> LUNIT["每行 → 一个单元"]
+    NONE --> NUNIT["1 个空单元"]
+
+    EXPAND --> SCOPE{scope?}
+    WHOLE --> SCOPE
+    LUNIT --> SCOPE
+    NUNIT --> SCOPE
+
+    SCOPE -->|1: per-unit| ISOLATED["独立的 ctx + EventBus<br/>单元间无上下文泄漏"]
+    SCOPE -->|0: shared| SHARED["合并树 → 单 ctx<br/>运行一次"]
+
+    ISOLATED --> STEPS["step₁.run(ctx,cfg,rt)<br/>step₂.run(ctx,cfg,rt)<br/>..."]
+    SHARED --> STEPS
+
+    STEPS --> OUT["产物目录: 重命名文件 / sidecar 文件 / 报告"]
+```
+
+### 三参数速查
+
+| | atom | scope | recurse |
+|---|---|---|---|
+| **含义** | 输入原子粒度 | 上下文分发 | 目录展开 |
+| **值** | `file` `folder` `line` `none` | `0` `1` | `true` `false` |
+| **定义位置** | 工作流 YAML | 工作流 YAML | CLI 参数 |
+| **模块约束** | 须在 `MODULE_META.atom` 中 | 须匹配 `MODULE_META.scope` | 无 |
+
+### 使用场景对照
+
+| 场景 | atom | scope | recurse | 典型任务 |
+|---|---|---|---|---|
+| 文件格式转换、预处理、元数据注入、重命名 | `file` | `1` | `true` | 逐文件操作，保留目录结构 |
+| 文件夹内批量重命名、打包归档 | `folder` | `1` | — | 整个文件夹作为一个任务 |
+| API 调用、日志下载、直接产出文件 | `none` | `1` | — | 无输入，从零创建 |
+| 网络爬虫、逐行 URL 下载 | `line` | `1` | — | 每行文本作为独立任务 |
+| 混杂文件分类、跨文件统计计数 | `file` | `0` | `true` | 全量合并后一次执行 |
+
+## 工作流 YAML
 
 ```yaml
 meta:
-  name: "文件批处理"
-  description: "复制文件、标准化后缀、生成摘要"
-mode: file
+  name: My Workflow
+  description: 工作流描述
+  version: "1.0.0"
+atom: file              # file | folder | line | none
+recurse: true           # 仅 atom=file 时有效；true 展开目录
 steps:
-  - module: normalize-extensions
-    name: 标准化后缀
+  - module: my-module   # 模块 slug
+    name: 步骤名称
     params:
-      lowercase: true
-  - module: example-write-summary
-    name: 生成摘要
-    params:
-      filename: "summary.txt"
+      key: value
 ```
 
----
+平台内置 6 个示例工作流，位于 `workflows/` 目录，可作为模板直接修改。
 
-## 纯内核模式
+## CLI 参考
 
-内核不依赖 GUI，可通过 Python 脚本直接调用 `execute_workflow()`：
+```
+用法: shell-worker WORKFLOW [选项]
 
-```python
-from core import execute_workflow, WorkflowDefinition, WorkflowMeta, WorkflowStep
+输入:
+  --files PATH ...        文件/文件夹路径
+  --recurse               递归展开文件夹
+  --lines TEXT            文本输入（每行一个任务）
+  --lines-file PATH       从文件读取文本（- 为 stdin）
 
-# 方式一：构造 WorkflowDefinition
-workflow = WorkflowDefinition(
-    meta=WorkflowMeta(name="My Workflow"),
-    mode="file",
-    steps=(
-        WorkflowStep(
-            module="normalize-extensions",
-            name="标准化后缀",
-            params={"lowercase": True},
-        ),
-        WorkflowStep(
-            module="example-write-summary",
-            name="生成摘要",
-            params={"filename": "summary.txt"},
-        ),
-    ),
-)
+执行:
+  --output-dir DIR        产物目录 (默认 ./out)
+  --direct                直接操作原始文件（跳过拷贝）
+  --modules-dir DIR       模块目录 (默认 ./modules)
+  --workflows-dir DIR     工作流目录 (默认 ./workflows)
 
-result = execute_workflow(
-    workflow,
-    output_dir="./output",
-    input_path="./input/myfile.jpg",       # file 模式：文件或文件夹路径
-    # input_text="line1\nline2",            # input 模式：多行文本
-    # direct_mode=True,                      # 直写模式，不拷贝
-    # event_callback=lambda event: print(f"[{event.type}] {event.text}"),
-    # progress_callback=lambda p: print(f"进度: {p['percent']}%"),
-)
+日志:
+  --log-file PATH         JSON 行式事件日志
 
-print(f"成功: {result['success']}")
-print(f"处理 {result['processed_units']} 个单元, 成功 {result['successful_units']}, 失败 {result['failed_units']}")
-print(f"产物目录: {result['output_dir']}")
+自检:
+  --list-workflows        列出全部工作流
+  --list-modules          列出全部模块
+
+退出码: 0=成功 | 1=部分失败 | 2=取消 | 3=参数非法
 ```
 
-```python
-# 方式二：加载已有 YAML 工作流
-result = execute_workflow(
-    "图集批处理.yaml",            # workflows/ 下的文件名
-    output_dir="./output",
-    input_path="./input/my_gallery",
-)
-```
+## 编写模块
+
+`modules/` 下每个 `.py` 文件为一个模块。须导出三要素：
 
 ```python
-# 方式三：直接传入 dict
-result = execute_workflow(
-    {
-        "meta": {"name": "Quick Test"},
-        "mode": "none",
-        "steps": [
-            {"module": "example-create-text-file", "params": {"filename": "hello.txt", "content": "Hello!"}},
-        ],
+MODULE_META = {
+    "slug": "my-module",
+    "name": "My Module",
+    "core_version": "2.0.0",
+    "tags": ["demo"],
+    "atom": ["file"],
+    "description": "模块功能描述",
+}
+CONFIG_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "suffix": {"type": "str", "title": "后缀", "default": "_done"},
     },
-    output_dir="./output",
-)
+}
+
+def run(ctx, cfg, runtime):
+    """ctx: PipelineContext    cfg: 已校验的步骤参数    runtime: PipelineRuntime"""
+    new_path = ctx.working_path.with_name(ctx.working_path.name + cfg["suffix"])
+    ctx.working_path.rename(new_path)
+    runtime.log("my-module", "success", f"已重命名: {new_path.name}")
+    return ctx.clone(working_path=new_path)
 ```
 
-### 在模块中使用 context.run_command() 调用外部程序
+要点：
+- `MODULE_META.scope` 可选，默认 `1`。仅在需要强制共享模式时设 `"scope": 0`。
+- `run()` 返回 `PipelineContext`（替换上下文）、`None`（保留原上下文）或 `{"context": ctx}` dict。
+- 跨步骤共享数据写入 `ctx.shared`，下游步骤通过同名 key 读取。
+- 调用外部程序使用 `runtime.spawn(command)`，跨平台 PTY 自动适配。
 
-```python
-def run(context, config):
-    result = context.run_command(["echo", "hello"])
-    # 输出实时写入 context.events (terminal:output)
-    # GUI 自动弹出 TerminalWindow 显示实时终端
-    if not result.is_success:
-        raise RuntimeError(f"命令返回 {result.exit_code}")
-    return context
-```
-
----
-
-## 步骤模块列表
-
-| 模块 | slug | 模式 | 说明 |
-|------|------|------|------|
-| 递归提取文件 | `flatten-folder` | folder | 递归移动子文件夹文件到根目录，按深度层级添加数字前缀 |
-| 清除文件属性 | `strip-attributes` | file, folder | 清除文件的只读/隐藏属性 |
-| 标准化文件后缀 | `normalize-extensions` | file, folder | 统一扩展名为小写标准后缀（jpeg→jpg, tiff→tif 等） |
-| 删除无用文件 | `delete-files` | file, folder | 按 glob 模式硬删除 .txt/.url/.html/Thumbs.db 等无用文件 |
-| 清除 EXIF 元数据 | `exiftool-clean` | file, folder | 通过 ExifTool 批量清除图片/视频文件元数据 |
-| 解除文件占用 | `unlock-files` | file, folder | 检测并终止 dllhost/资源管理器等进程对文件的占用锁定 |
-| Gallery 统计计数 | `gallery-count` | folder | 统计视频/其他文件数量，在文件夹名后追加计数标签 |
-| Gallery 重命名 | `gallery-rename` | folder | 按文件类型分组建模重命名（图片无前缀，视频 VIDEO_ 队列） |
-| RAR 打包 | `pack-rar` | folder | 调用 WinRAR 将文件夹打包为 .rar 压缩包 |
-| 提取图集 | `extract-archive` | file | 从 ZIP 压缩包提取图片并生成 info.json 信息文件 |
-| FFmpeg 转码 | `ffmpeg-convert` | file, folder | 批量转换媒体文件格式，支持硬件加速 |
-| FFmpeg 合成编码 | `ffmpeg-compose` | file, folder | 将 Y4M 流或帧序列编码为最终视频 |
-| FFmpeg 合并 m3u8 | `ffmpeg-merge` | file, input | 下载并合并 HLS 播放列表为单个文件 |
-| VapourSynth 去隔行 | `vs-deinterlace` | file | BWDIF/VIVTC 去隔行处理 |
-| VapourSynth 补帧 | `vs-frame-interpolate` | file | RIFE 模型 AI 智能补帧（2x/4x/8x） |
-| VapourSynth 超分 | `vs-super-resolution` | file | RealESRGAN/SwinIR AI 超分辨率处理 |
-| 路径重命名 | `example-rename-path` | file, folder | 为文件/文件夹添加前缀后缀重命名 |
-| 写入摘要 | `example-write-summary` | file, folder, none | 将 PipelineContext 状态输出为摘要文本 |
-| 创建文本文件 | `example-create-text-file` | none | 在产物目录创建文本文件 |
-| 循环计数 | `example-cycle-count-counter` | cycle | 跨文件累计计数，生成处理清单报告 |
-| 输入回显 | `example-input-echo` | input | 将每行文本输入写入独立文件 |
-
-### 引入外部工具
-
-部分模块依赖外部程序。`resources/` 目录提供安装脚本：
-
-```powershell
-powershell -File resources/install_exiftool.ps1    # ExifTool
-powershell -File resources/install_ffmpeg.ps1      # FFmpeg
-powershell -File resources/install_aria2.ps1       # aria2
-```
-
----
-
-## 测试
-
-### 运行命令
-
-```bash
-python -m pytest
-python -m pytest --cov=core --cov=gui --cov=modules --cov-report=term-missing
-```
-
-### 测试文件覆盖点
-
-| 文件 | 覆盖内容 |
-|------|---------|
-| `test_executor.py` | file/folder/none/cycle/input 模式执行、错误隔离、取消、参数校验 |
-| `test_module_manager.py` | 合法模块加载、无效模块忽略、缓存和重新扫描、重复 slug |
-| `test_workflow_loader.py` | YAML 加载、校验错误捕捉、保存往返、new_workflow 模板 |
-| `test_file_handler.py` | none 上下文、文件/文件夹复制、finalize_context、PipelineEventBus |
-| `test_workflow_editor_state.py` | iter_schema_fields、normalize_params、filter_modules、WorkflowDraft |
-| `test_flatten_folder.py` | FlattenFolder 模块集成测试 |
-| `test_example_assets.py` | 示例模块可发现、工作流可加载、端到端执行 |
-| `test_config_schema.py` | validate_config_schema、normalize_config_params 参数校验 |
-| `test_input_handler.py` | InputHandler.build_units、prepare_context |
-| `test_input_inspector.py` | InputInspector 路径校验、文本输入拆分 |
-| `test_unlock_files.py` | 文件锁定检测 CreateFileW 原子操作验证 |
+更多细节请阅读 `AGENTS.md`。

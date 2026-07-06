@@ -1,0 +1,13 @@
+meta:
+  name: Create Example
+  description: atom=none — produce a single text file with no input needed.
+  version: "1.0.0"
+atom: none
+scope: 1
+recurse: false
+steps:
+  - module: verify-create-text-file
+    name: Create File
+    params:
+      filename: hello.txt
+      content: hello world

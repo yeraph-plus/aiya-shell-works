@@ -7,13 +7,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 MODULE_META = {
     "slug": "ffmpeg-compose",
     "name": "FFmpeg 合成编码",
-    "core_version": "1.0.0",
+    "core_version": "2.0.0",
     "tags": ["video", "ffmpeg", "encode", "compose"],
-    "mode": ["file", "folder"],
+    "atom": ["file", "folder"],
     "parent": "vs-super-resolution",
     "description": "使用 FFmpeg 将 Y4M 原始流或帧序列合成为最终编码视频，支持多种编码器和参数。",
 }
@@ -90,8 +91,8 @@ _VIDEO_EXTENSIONS = frozenset({
 })
 
 
-def _resolve_ffmpeg_path(config: dict) -> str | None:
-    custom = config.get("ffmpeg_path", "").strip()
+def _resolve_ffmpeg_path(cfg: dict) -> str | None:
+    custom = cfg.get("ffmpeg_path", "").strip()
     if custom:
         p = Path(custom)
         if p.exists():
@@ -115,7 +116,6 @@ def _format_ext(container: str) -> str:
 
 
 def _find_sequence_pattern(directory: Path) -> tuple[str, str] | None:
-    """Detect frame sequence pattern in a directory. Returns (prefix, pattern) or None."""
     png_files = sorted(directory.glob("*.png"))
     jpg_files = sorted(directory.glob("*.jpg")) + sorted(directory.glob("*.jpeg"))
     files = png_files or jpg_files
@@ -127,7 +127,6 @@ def _find_sequence_pattern(directory: Path) -> tuple[str, str] | None:
     stem = first.stem
     ext = first.suffix
 
-    # Detect numeric suffix pattern
     digits = ""
     for ch in reversed(stem):
         if ch.isdigit():
@@ -141,58 +140,52 @@ def _find_sequence_pattern(directory: Path) -> tuple[str, str] | None:
         pattern = f"{prefix}%0{padding}d{ext}"
         return (prefix, pattern)
 
-    # Fallback: generic pattern
     pattern = f"%06d{ext}"
     return ("", pattern)
 
 
-def run(context, config):
-    working_path = Path(context.working_path)
-    output_dir = Path(context.output_dir)
+def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+    working_path = Path(ctx.working_path)
+    output_dir = Path(ctx.output_dir)
 
-    ffmpeg = _resolve_ffmpeg_path(config)
+    ffmpeg = _resolve_ffmpeg_path(cfg)
     if ffmpeg is None:
-        context.events.log(
+        runtime.log(
             "ffmpeg-compose", "error",
             "FFmpeg 未找到，请配置 ffmpeg_path 或运行 resources/install_ffmpeg.ps1。",
         )
-        return context
+        return ctx
 
-    encoder = config.get("encoder", "libx264")
-    preset = config.get("preset", "medium")
-    crf = int(config.get("crf", 18))
-    pixel_format = config.get("pixel_format", "auto")
-    container = config.get("output_container", "mp4")
-    framerate_str = config.get("framerate", "").strip()
+    encoder = cfg.get("encoder", "libx264")
+    preset = cfg.get("preset", "medium")
+    crf = int(cfg.get("crf", 18))
+    pixel_format = cfg.get("pixel_format", "auto")
+    container = cfg.get("output_container", "mp4")
+    framerate_str = cfg.get("framerate", "").strip()
 
     stem = working_path.stem
 
-    # Detect input type
     is_frame_sequence = working_path.is_dir()
     is_y4m = not is_frame_sequence and working_path.suffix.lower() == ".y4m"
     is_video = not is_frame_sequence and working_path.suffix.lower() in _VIDEO_EXTENSIONS
 
     if not (is_frame_sequence or is_y4m or is_video):
-        # Try to detect frame sequence in the working directory
         if working_path.is_dir() and _find_sequence_pattern(working_path):
             is_frame_sequence = True
         else:
-            context.events.log(
+            runtime.log(
                 "ffmpeg-compose", "error",
                 f"不支持的输入类型: {working_path}。需要 Y4M 文件或帧序列目录。",
             )
-            return context
+            return ctx
 
     output_ext = _format_ext(container)
     output_path = output_dir / f"{stem}_output{output_ext}"
 
-    # Build FFmpeg command
     if is_frame_sequence:
-        # Detect pattern
         detected = _find_sequence_pattern(working_path)
-        pattern = framerate_str or (detected[1] if detected else config.get("frame_pattern", "%06d"))
+        pattern = framerate_str or (detected[1] if detected else cfg.get("frame_pattern", "%06d"))
 
-        # Frame rate
         fps = framerate_str or "24"
 
         cmd = [
@@ -200,7 +193,7 @@ def run(context, config):
             "-framerate", fps,
             "-i", str(working_path / pattern),
         ]
-        context.events.log(
+        runtime.log(
             "ffmpeg-compose", "message",
             f"合成帧序列: {working_path.name} (帧率: {fps}, 模式: {pattern})...",
         )
@@ -209,7 +202,7 @@ def run(context, config):
             ffmpeg,
             "-i", str(working_path),
         ]
-        context.events.log(
+        runtime.log(
             "ffmpeg-compose", "message",
             f"编码 Y4M: {working_path.name}...",
         )
@@ -218,51 +211,41 @@ def run(context, config):
             ffmpeg,
             "-i", str(working_path),
         ]
-        context.events.log(
+        runtime.log(
             "ffmpeg-compose", "message",
             f"编码视频: {working_path.name}...",
         )
 
-    # Encoder settings
     cmd.extend(["-c:v", encoder])
 
     if encoder in ("libx264", "libx265"):
         cmd.extend(["-preset", preset])
         cmd.extend(["-crf", str(crf)])
 
-    # Pixel format
     if pixel_format != "auto":
         cmd.extend(["-pix_fmt", pixel_format])
 
-    # Output
     cmd.extend(["-y", str(output_path)])
 
-    context.events.log("ffmpeg-compose", "hint", f"命令行: {' '.join(cmd)}")
+    runtime.log("ffmpeg-compose", "hint", f"命令行: {' '.join(cmd)}")
 
     try:
-        import winpty  # noqa: F401
-    except ImportError:
-        context.events.log("ffmpeg-compose", "error", "pywinpty 未安装，无法执行终端命令。")
-        return context
-
-    try:
-        result = context.run_command(cmd)
+        result = runtime.spawn(cmd)
     except OSError as e:
-        context.events.log("ffmpeg-compose", "error", f"FFmpeg 启动失败: {e}")
-        return context
+        runtime.log("ffmpeg-compose", "error", f"FFmpeg 启动失败: {e}")
+        return ctx
 
     if not result.is_success:
-        context.events.log(
+        runtime.log(
             "ffmpeg-compose", "error",
             f"FFmpeg 返回非零退出码: {result.exit_code}",
         )
-        return context
+        return ctx
 
-    updated_context = context.clone(working_path=output_path)
-    updated_context.track_extra_file(output_path)
-    updated_context.events.log(
+    ctx.track_extra_file(output_path)
+    runtime.log(
         "ffmpeg-compose", "success",
         f"编码完成: {output_path.name}",
         {"output_path": str(output_path)},
     )
-    return updated_context
+    return ctx.clone(working_path=output_path)

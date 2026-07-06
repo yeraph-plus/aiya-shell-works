@@ -1,16 +1,17 @@
 meta:
-  name: Folder Rename Example
-  description: Rename a folder copy and generate a summary.
+  name: Folder Rename
+  description: atom=folder + per-unit — folder passed as one unit, prefix-renamed.
   version: "1.0.0"
-mode: folder
+atom: folder
+scope: 1
 steps:
-  - module: rename-path
+  - module: verify-rename-path
     name: Rename Folder
     params:
-      prefix: "packaged-"
+      prefix: "pkg-"
       suffix: ""
-  - module: write-summary
-    name: Generate Summary
+  - module: verify-write-summary
+    name: Write Summary
     params:
-      filename: "folder-workflow-summary.txt"
-      title: "Folder Workflow Report"
+      filename: "folder-summary.txt"
+      title: "Folder Rename Report"

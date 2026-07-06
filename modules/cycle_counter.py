@@ -1,49 +1,47 @@
-"""Example module for cycle mode: counts processed files via shared context."""
+"""cycle-counter — atom=file + scope=shared example module.
+
+The classic "all inputs share one context" case.  Because scope=shared
+merges every input file into ``output_dir`` (the working tree), this module
+simply rglobs the working tree once and counts files.  No cross-unit shared
+accumulation hack is needed — the executor hands us a single ctx already.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 MODULE_META = {
     "slug": "cycle-counter",
     "name": "Cycle Counter",
-    "description": "Count how many files have been processed in a cycle workflow via shared context.",
-    "core_version": "1.0.0",
-    "tags": ["cycle", "counter"],
-    "mode": ["cycle"],
+    "description": "Count files inside the merged working tree and write a report.",
+    "core_version": "2.0.0",
+    "tags": ["example", "counter"],
+    "atom": ["file"],
+    "scope": 0,
 }
 
 CONFIG_SCHEMA = {
     "type": "object",
     "properties": {
-        "report_filename": {
-            "type": "str",
-            "title": "Report Filename",
-            "default": "cycle-report.txt",
-        },
+        "report_filename": {"type": "str", "title": "Report Filename",
+                             "default": "count.txt"},
     },
 }
 
 
-def run(context, config):
-    count = context.shared.get("cycle_count", 0) + 1
-    report_path = Path(context.output_dir) / config["report_filename"]
+def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+    files = sorted(p for p in Path(ctx.working_path).rglob("*") if p.is_file())
+    for i, fp in enumerate(files, 1):
+        runtime.log("cycle-counter", "success",
+                    f"{i}: {fp.name}",
+                    {"index": i, "path": str(fp)})
 
-    lines: list[str] = []
-    if report_path.exists():
-        lines = report_path.read_text(encoding="utf-8").splitlines()
-
-    working_info = (
-        f"working_path is a {'directory' if context.is_dir else 'file'}: {context.working_path}"
-    )
-    lines.append(f"[{count}] {working_info}")
-    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    updated = context.clone(shared={**context.shared, "cycle_count": count})
-    updated.track_extra_file(report_path)
-    updated.events.log(
-        "cycle-counter", "success",
-        f"已处理第 {count} 个文件: {context.working_path.name}",
-        {"count": count, "path": str(context.working_path)},
-    )
-    return updated
+    # Avoid re-counting our own report by writing last.
+    report = Path(ctx.working_path) / cfg["report_filename"]
+    report.write_text(f"count={len(files)}\n", encoding="utf-8")
+    ctx.track_extra_file(report)
+    runtime.log("cycle-counter", "message",
+                f"统计完成: count={len(files)}",
+                {"count": len(files), "report": str(report)})
+    return ctx

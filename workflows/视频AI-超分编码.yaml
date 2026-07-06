@@ -2,7 +2,7 @@ meta:
   name: "视频AI处理 - 超分编码"
   description: "ML 超分 → FFmpeg 编码 (仅超分处理)"
   version: "1.0.0"
-mode: file
+atom: file
 steps:
   - module: vs-super-resolution
     name: "ML 超分"

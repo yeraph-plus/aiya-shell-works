@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 
 MODULE_META = {
     "slug": "gallery-rename",
     "name": "Gallery 重命名",
-    "core_version": "1.0.0",
+    "core_version": "2.0.0",
     "tags": ["rename", "gallery", "sort"],
-    "mode": ["folder"],
+    "atom": ["folder"],
     "description": "按文件类型分组建模重命名：jpg/png 无前缀，视频统一 VIDEO_ 队列，其余格式按自身后缀前缀。",
 }
 
@@ -47,8 +48,8 @@ def _natural_sort_key(name: str) -> list:
     return [int(p) if p.isdigit() else p.lower() for p in parts]
 
 
-def _collect_targets(context) -> list[Path]:
-    wp = Path(context.working_path)
+def _collect_targets(ctx: "Any") -> list[Path]:
+    wp = Path(ctx.working_path)
     if not wp.is_dir():
         return []
     return sorted(
@@ -56,24 +57,23 @@ def _collect_targets(context) -> list[Path]:
     )
 
 
-def run(context, config):
-    working_dir = Path(context.working_path)
+def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+    working_dir = Path(ctx.working_path)
     if not working_dir.is_dir():
-        context.events.log("gallery-rename", "error", "working_path 不是目录。")
-        return context
+        runtime.log("gallery-rename", "error", "working_path 不是目录。")
+        return ctx
 
-    padding = config.get("padding", 3)
-    video_str = config.get("video_extensions", "mp4 mov mkv wmv flv")
-    image_str = config.get("image_extensions", "jpg jpeg png")
+    padding = cfg.get("padding", 3)
+    video_str = cfg.get("video_extensions", "mp4 mov mkv wmv flv")
+    image_str = cfg.get("image_extensions", "jpg jpeg png")
     video_exts = {e.strip().lower() for e in video_str.split() if e.strip()}
     image_exts = {e.strip().lower() for e in image_str.split() if e.strip()}
 
-    files = _collect_targets(context)
+    files = _collect_targets(ctx)
     if not files:
-        context.events.log("gallery-rename", "hint", "无可重命名的文件。")
-        return context
+        runtime.log("gallery-rename", "hint", "无可重命名的文件。")
+        return ctx
 
-    # Group files by naming strategy
     groups: dict[str, list[Path]] = {}
     for f in files:
         ext = f.suffix.lower().lstrip(".")
@@ -110,7 +110,6 @@ def run(context, config):
                 counter += 1
                 continue
 
-            # Resolve collisions
             collision = 0
             while target.exists():
                 collision += 1
@@ -121,7 +120,7 @@ def run(context, config):
                 renamed += 1
             except OSError as e:
                 failed += 1
-                context.events.log(
+                runtime.log(
                     "gallery-rename", "error",
                     f"重命名失败: {f.name} ({e})",
                 )
@@ -129,12 +128,12 @@ def run(context, config):
             counter += 1
 
     if renamed > 0:
-        context.events.log(
+        runtime.log(
             "gallery-rename", "message",
             f"重命名完成: {renamed} 个文件, {failed} 个失败。",
             {"renamed": renamed, "failed": failed},
         )
     elif failed == 0:
-        context.events.log("gallery-rename", "message", "文件已为期望名称，无需重命名。")
+        runtime.log("gallery-rename", "message", "文件已为期望名称，无需重命名。")
 
-    return context
+    return ctx

@@ -1,4 +1,9 @@
-"""State helpers for the workflow editor and schema-driven parameter forms."""
+"""State helpers for the workflow editor and schema-driven parameter forms.
+
+Adapted to the new atom × scope × recurse model.  ``filter_modules`` now
+ANDs on both ``atom`` and ``scope``, and ``WorkflowDraft`` carries the new
+three fields instead of the legacy ``mode`` string.
+"""
 
 from __future__ import annotations
 
@@ -11,29 +16,19 @@ from core import CORE_VERSION, ModuleDefinition, WorkflowDefinition, WorkflowMet
 
 
 SUPPORTED_FIELD_TYPES = (
-    "int",
-    "float",
-    "str",
-    "bool",
-    "select",
-    "radio",
-    "file_path",
-    "folder_path",
+    "int", "float", "str", "bool", "select", "radio",
+    "file_path", "folder_path",
 )
 
 
 @dataclass(frozen=True, slots=True)
 class SchemaOption:
-    """One selectable option in a generated form field."""
-
     label: str
     value: Any
 
 
 @dataclass(frozen=True, slots=True)
 class SchemaField:
-    """Normalized schema field consumed by the dynamic parameter form."""
-
     name: str
     field_type: str
     label: str
@@ -51,15 +46,18 @@ def filter_modules(
     modules: Mapping[str, ModuleDefinition],
     *,
     active_tags: set[str] | None = None,
-    active_mode: str | None = None,
+    active_atom: str | None = None,
+    active_scope: int | None = None,
 ) -> list[ModuleDefinition]:
-    """Filter and sort modules by tag intersection and compatible mode."""
+    """Filter and sort modules by tag AND atom AND scope compatibility."""
 
     filtered: list[ModuleDefinition] = []
     for definition in modules.values():
         if active_tags and not (active_tags <= set(definition.tags)):
             continue
-        if active_mode and active_mode not in definition.mode:
+        if active_atom and active_atom not in definition.atom:
+            continue
+        if active_scope and active_scope != definition.scope:
             continue
         filtered.append(definition)
 
@@ -73,30 +71,24 @@ def filter_modules(
 
 
 def iter_schema_fields(schema: Mapping[str, Any] | None) -> tuple[SchemaField, ...]:
-    """Normalize a module config schema into ordered GUI field definitions."""
-
     if not isinstance(schema, Mapping):
         return ()
-
-    properties: Mapping[str, Any]
     if schema.get("type") == "object" and isinstance(schema.get("properties"), Mapping):
         properties = schema["properties"]
         required_fields = {
-            item
-            for item in schema.get("required", [])
+            item for item in schema.get("required", [])
             if isinstance(item, str) and item.strip()
         }
     else:
         properties = {
-            key: value
-            for key, value in schema.items()
-            if isinstance(key, str) and isinstance(value, Mapping)
+            k: v for k, v in schema.items()
+            if isinstance(k, str) and isinstance(v, Mapping)
         }
         required_fields = set()
 
     fields: list[SchemaField] = []
-    for name, raw_definition in properties.items():
-        definition = dict(raw_definition)
+    for name, raw in properties.items():
+        definition = dict(raw)
         field_type = _normalize_field_type(definition)
         options = _normalize_options(definition)
         default = definition.get("default", _default_value_for_type(field_type, options))
@@ -104,11 +96,9 @@ def iter_schema_fields(schema: Mapping[str, Any] | None) -> tuple[SchemaField, .
             SchemaField(
                 name=name,
                 field_type=field_type,
-                label=str(
-                    definition.get("title")
-                    or definition.get("label")
-                    or name.replace("_", " ").title()
-                ),
+                label=str(definition.get("title")
+                          or definition.get("label")
+                          or name.replace("_", " ").title()),
                 default=default,
                 required=name in required_fields or bool(definition.get("required")),
                 options=options,
@@ -123,71 +113,57 @@ def iter_schema_fields(schema: Mapping[str, Any] | None) -> tuple[SchemaField, .
 
 
 def build_default_params(schema: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Build a default parameter dictionary from a config schema."""
-
-    return {
-        field.name: field.default
-        for field in iter_schema_fields(schema)
-    }
+    return {field.name: field.default for field in iter_schema_fields(schema)}
 
 
 def normalize_params(
     schema: Mapping[str, Any] | None,
     values: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Merge explicit values onto schema defaults with basic type coercion."""
-
-    raw_values = dict(values or {})
-    normalized: dict[str, Any] = {}
+    raw = dict(values or {})
+    out: dict[str, Any] = {}
     for field in iter_schema_fields(schema):
-        candidate = raw_values.get(field.name, field.default)
-        normalized[field.name] = coerce_field_value(field, candidate)
-    return normalized
+        out[field.name] = coerce_field_value(field, raw.get(field.name, field.default))
+    return out
 
 
 def coerce_field_value(field: SchemaField, value: Any) -> Any:
-    """Coerce a raw GUI value to the normalized type expected by the workflow."""
-
     if value is None:
         return field.default
-
     if field.field_type == "int":
         try:
             return int(value)
         except (TypeError, ValueError):
             return int(field.default) if field.default not in ("", None) else 0
-
     if field.field_type == "float":
         try:
             return float(value)
         except (TypeError, ValueError):
             return float(field.default) if field.default not in ("", None) else 0.0
-
     if field.field_type == "bool":
         if isinstance(value, bool):
             return value
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
-
     if field.field_type in {"select", "radio"}:
-        valid_values = {option.value for option in field.options}
-        if value in valid_values:
+        valid = {option.value for option in field.options}
+        if value in valid:
             return value
         return field.default
-
     if field.field_type in {"file_path", "folder_path", "str"}:
         return str(value)
-
     return value
 
 
 @dataclass(slots=True)
 class WorkflowDraft:
-    """Mutable editor state that can be converted to a workflow definition."""
+    """Mutable editor state for the new atom/scope/recurse workflow schema."""
 
     name: str
-    mode: str
+    atom: str
+    scope: int = 1
+    recurse: bool = False
     description: str = ""
     steps: list[WorkflowStep] | None = None
     source_path: Path | None = None
@@ -198,18 +174,14 @@ class WorkflowDraft:
 
     @classmethod
     def from_workflow(cls, workflow: WorkflowDefinition) -> "WorkflowDraft":
-        """Create a mutable draft from a loaded or new workflow."""
-
         return cls(
             name=workflow.meta.name,
             description=workflow.meta.description,
-            mode=workflow.mode,
+            atom=workflow.atom,
+            scope=workflow.scope,
+            recurse=workflow.recurse,
             steps=[
-                WorkflowStep(
-                    module=step.module,
-                    params=dict(step.params),
-                    name=step.name,
-                )
+                WorkflowStep(module=step.module, params=dict(step.params), name=step.name)
                 for step in workflow.steps
             ],
             source_path=workflow.source_path,
@@ -221,8 +193,6 @@ class WorkflowDraft:
         *,
         step_name: str = "",
     ) -> WorkflowStep:
-        """Append a module as a new step, inserting after parent if present."""
-
         params = build_default_params(module_definition.config_schema)
         step = WorkflowStep(
             module=module_definition.slug,
@@ -239,13 +209,9 @@ class WorkflowDraft:
         return step
 
     def remove_step(self, index: int) -> WorkflowStep:
-        """Remove one step by index."""
-
         return self.steps.pop(index)
 
     def move_step(self, index: int, offset: int) -> int:
-        """Move a step up or down and return the new index."""
-
         new_index = max(0, min(index + offset, len(self.steps) - 1))
         if new_index == index:
             return index
@@ -254,28 +220,18 @@ class WorkflowDraft:
         return new_index
 
     def update_step_name(self, index: int, name: str) -> None:
-        """Replace the step display name."""
-
         current = self.steps[index]
         self.steps[index] = WorkflowStep(
-            module=current.module,
-            params=dict(current.params),
-            name=name.strip(),
+            module=current.module, params=dict(current.params), name=name.strip(),
         )
 
     def update_step_params(self, index: int, params: Mapping[str, Any]) -> None:
-        """Replace the step parameters."""
-
         current = self.steps[index]
         self.steps[index] = WorkflowStep(
-            module=current.module,
-            params=dict(params),
-            name=current.name,
+            module=current.module, params=dict(params), name=current.name,
         )
 
     def to_workflow_definition(self) -> WorkflowDefinition:
-        """Convert the draft to the immutable workflow structure."""
-
         return WorkflowDefinition(
             meta=WorkflowMeta(
                 name=self.name.strip(),
@@ -283,7 +239,9 @@ class WorkflowDraft:
                 version=CORE_VERSION,
                 slug=uuid.uuid4().hex[:8],
             ),
-            mode=self.mode,
+            atom=self.atom,
+            scope=self.scope,
+            recurse=self.recurse,
             steps=tuple(self.steps),
             source_path=self.source_path,
         )
@@ -295,7 +253,6 @@ def _normalize_field_type(definition: Mapping[str, Any]) -> str:
         normalized = raw_type.strip().lower()
     else:
         normalized = "str"
-
     if normalized in {"integer", "int"}:
         return "int"
     if normalized in {"number", "float"}:
@@ -313,7 +270,6 @@ def _normalize_options(definition: Mapping[str, Any]) -> tuple[SchemaOption, ...
     raw_options = definition.get("options", definition.get("enum", []))
     if not isinstance(raw_options, Iterable) or isinstance(raw_options, (str, bytes, Mapping)):
         return ()
-
     options: list[SchemaOption] = []
     for item in raw_options:
         if isinstance(item, Mapping):

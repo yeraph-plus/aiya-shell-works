@@ -1,1 +1,3 @@
-﻿"""Test suite package for the Shell Worker platform."""
+"""Test package for shell-refactor core verification."""
+
+from __future__ import annotations

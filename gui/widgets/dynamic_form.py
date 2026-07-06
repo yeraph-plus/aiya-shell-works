@@ -49,8 +49,6 @@ class DynamicParameterForm(QWidget):
         schema: dict[str, Any] | None,
         values: dict[str, Any] | None = None,
     ) -> None:
-        """Replace the current form with fields generated from the schema."""
-
         self._clear_layout()
         self._widgets = {}
         self._fields = iter_schema_fields(schema)
@@ -71,8 +69,6 @@ class DynamicParameterForm(QWidget):
         self.values_changed.emit(self.get_values())
 
     def get_values(self) -> dict[str, Any]:
-        """Return the current parameter mapping from form widgets."""
-
         values: dict[str, Any] = {}
         for field in self._fields:
             widget = self._widgets[field.name]
@@ -210,7 +206,6 @@ class DynamicParameterForm(QWidget):
 
 
 def _radio_value(container: QWidget) -> Any:
-    """Return the value of the checked radio button in a radio group container."""
     for child in container.children():
         if isinstance(child, QRadioButton) and child.isChecked():
             return child.property("radio_value")

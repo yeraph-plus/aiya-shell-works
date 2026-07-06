@@ -7,13 +7,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 MODULE_META = {
     "slug": "vs-super-resolution",
     "name": "VapourSynth 超分",
-    "core_version": "1.0.0",
+    "core_version": "2.0.0",
     "tags": ["video", "vapoursynth", "super-resolution", "esrgan", "swinir", "ml"],
-    "mode": ["file"],
+    "atom": ["file"],
     "parent": "vs-frame-interpolate",
     "description": "使用 VapourSynth + vs-mlrt 对视频进行 AI 超分辨率处理，支持 RealESRGAN / SwinIR 模型。",
 }
@@ -94,8 +95,8 @@ _VIDEO_EXTENSIONS = frozenset({
 })
 
 
-def _resolve_vspipe_path(config: dict) -> str | None:
-    custom = config.get("vspipe_path", "").strip()
+def _resolve_vspipe_path(cfg: dict) -> str | None:
+    custom = cfg.get("vspipe_path", "").strip()
     if custom:
         p = Path(custom)
         if p.exists():
@@ -120,8 +121,8 @@ def _resolve_vsmlrt_plugin() -> str | None:
     return None
 
 
-def _resolve_model_dir(config: dict) -> Path | None:
-    custom = config.get("model_path", "").strip()
+def _resolve_model_dir(cfg: dict) -> Path | None:
+    custom = cfg.get("model_path", "").strip()
     if custom:
         p = Path(custom)
         if p.is_dir():
@@ -203,58 +204,58 @@ def _generate_vpy_script(
     Path(script_path).write_text(script_content, encoding="utf-8")
 
 
-def run(context, config):
-    working_path = Path(context.working_path)
-    output_dir = Path(context.output_dir)
+def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+    working_path = Path(ctx.working_path)
+    output_dir = Path(ctx.output_dir)
 
     if working_path.is_dir():
-        context.events.log(
+        runtime.log(
             "vs-super-resolution", "message",
             "输入为目录 (帧序列)。",
         )
     elif working_path.is_file():
         if working_path.suffix.lower() not in _VIDEO_EXTENSIONS:
-            context.events.log(
+            runtime.log(
                 "vs-super-resolution", "message",
                 f"不支持的视频格式: {working_path.suffix}，跳过。",
             )
-            return context
+            return ctx
     else:
-        context.events.log("vs-super-resolution", "error", f"输入无效: {working_path}")
-        return context
+        runtime.log("vs-super-resolution", "error", f"输入无效: {working_path}")
+        return ctx
 
-    vspipe = _resolve_vspipe_path(config)
+    vspipe = _resolve_vspipe_path(cfg)
     if vspipe is None:
-        context.events.log(
+        runtime.log(
             "vs-super-resolution", "error",
             "VSPipe.exe 未找到。请配置 vspipe_path 或运行 resources/install_vapoursynth.ps1 安装 VapourSynth。",
         )
-        return context
+        return ctx
 
     plugin_path_str = _resolve_vsmlrt_plugin()
     if plugin_path_str is None:
-        context.events.log(
+        runtime.log(
             "vs-super-resolution", "error",
             "vsmlrt.dll 未找到。请运行 resources/install_vsmlrt.ps1 安装 vs-mlrt 插件，或将 vsmlrt.dll 放入 resources/ 下任意位置。",
         )
-        return context
+        return ctx
     plugin_path = Path(plugin_path_str)
 
-    model_dir = _resolve_model_dir(config)
+    model_dir = _resolve_model_dir(cfg)
     if model_dir is None:
-        context.events.log(
+        runtime.log(
             "vs-super-resolution", "error",
             "模型目录未找到，请运行 resources/install_vsmlrt.ps1 下载模型，或配置 model_path。",
         )
-        return context
+        return ctx
 
-    model_name = config.get("model", "RealESRGAN_x4plus")
-    scale_factor = config.get("scale_factor", "2x")
-    gpu = config.get("gpu", True)
-    denoise_strength = float(config.get("denoise_strength", 0.0))
-    output_format = config.get("output_format", "y4m")
-    start_frame = int(config.get("start_frame", 0))
-    end_frame = int(config.get("end_frame", -1))
+    model_name = cfg.get("model", "RealESRGAN_x4plus")
+    scale_factor = cfg.get("scale_factor", "2x")
+    gpu = cfg.get("gpu", True)
+    denoise_strength = float(cfg.get("denoise_strength", 0.0))
+    output_format = cfg.get("output_format", "y4m")
+    start_frame = int(cfg.get("start_frame", 0))
+    end_frame = int(cfg.get("end_frame", -1))
 
     stem = _get_stem(working_path)
     script_path = output_dir / f"{stem}_sr.vpy"
@@ -273,8 +274,8 @@ def run(context, config):
         script_path=str(script_path),
     )
 
-    context.events.log("vs-super-resolution", "hint", f"VSPipe 脚本已生成: {script_path}")
-    context.events.log(
+    runtime.log("vs-super-resolution", "hint", f"VSPipe 脚本已生成: {script_path}")
+    runtime.log(
         "vs-super-resolution", "message",
         f"开始超分: {working_path.name} (模型: {model_name}, 倍数: {scale_factor})...",
     )
@@ -291,50 +292,42 @@ def run(context, config):
     if end_frame >= 0:
         cmd.extend(["-e", str(end_frame)])
 
-    context.events.log("vs-super-resolution", "hint", f"命令行: {' '.join(cmd)}")
+    runtime.log("vs-super-resolution", "hint", f"命令行: {' '.join(cmd)}")
 
     try:
-        import winpty  # noqa: F401
-    except ImportError:
-        context.events.log("vs-super-resolution", "error", "pywinpty 未安装，无法执行终端命令。")
-        return context
-
-    try:
-        result = context.run_command(cmd)
+        result = runtime.spawn(cmd)
     except OSError as e:
-        context.events.log("vs-super-resolution", "error", f"VSPipe 启动失败: {e}")
-        return context
+        runtime.log("vs-super-resolution", "error", f"VSPipe 启动失败: {e}")
+        return ctx
 
     if not result.is_success:
-        context.events.log(
+        runtime.log(
             "vs-super-resolution", "error",
             f"VSPipe 返回非零退出码: {result.exit_code}",
         )
-        return context
+        return ctx
 
     if output_format in ("png-sequence", "jpg-sequence"):
         subfolder = f"{stem}_sr_frames"
         frame_dir = output_dir / subfolder
         if frame_dir.exists():
-            new_context = context.clone(working_path=frame_dir)
-            new_context.track_extra_file(frame_dir)
-            new_context.events.log(
+            ctx.track_extra_file(frame_dir)
+            runtime.log(
                 "vs-super-resolution", "success",
                 f"超分完成，帧序列输出到: {frame_dir}",
             )
-            return new_context
+            return ctx.clone(working_path=frame_dir)
         else:
-            context.events.log(
+            runtime.log(
                 "vs-super-resolution", "error",
                 f"帧序列子文件夹未创建: {frame_dir}",
             )
-            return context
+            return ctx
 
-    updated_context = context.clone(working_path=output_path)
-    updated_context.track_extra_file(output_path)
-    updated_context.events.log(
+    ctx.track_extra_file(output_path)
+    runtime.log(
         "vs-super-resolution", "success",
         f"超分完成: {output_path.name}",
         {"output_path": str(output_path)},
     )
-    return updated_context
+    return ctx.clone(working_path=output_path)

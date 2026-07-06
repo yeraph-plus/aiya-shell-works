@@ -1,29 +1,26 @@
-# Shell Worker Platform
+# GUI optional
+gui/__pycache__/
+**/__pycache__/
 
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
-dist/
+# Build/dist
 build/
-.pytest_cache/
+dist/
+_internal/
+*.egg-info/
+*.exe
 
-# IDE
-.idea/
+# Generated logs
+*.jsonl
+*.log
+
+# Resources: track install scripts / mock_tool at root; ignore all downloaded binary subdirs
+resources/*/
+
+# Editor
 .vscode/
-*.swp
+.idea/
 
-# Virtual Environment
-venv/
-.venv/
-env/
-
-# Downloaded external tools (keep install scripts)
-resources/**/*.exe
-resources/**/*.dll
-resources/**/*.onnx
-resources/**/*.7z
-resources/**/*.zip
-!resources/**/*.ps1
-!resources/**/.gitkeep
+# pytest cache
+.pytest_cache/
+.coverage
+htmlcov/

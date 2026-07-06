@@ -6,14 +6,15 @@ import json
 import random
 import zipfile
 from pathlib import Path
+from typing import Any
 
 
 MODULE_META = {
     "slug": "extract-archive",
     "name": "提取图集",
-    "core_version": "1.0.0",
+    "core_version": "2.0.0",
     "tags": ["extract", "zip", "gallery", "archive"],
-    "mode": ["file"],
+    "atom": ["file"],
     "description": "从 ZIP 压缩包中随机提取图片文件到输出目录，并生成 info.json 信息文件。",
 }
 
@@ -44,20 +45,20 @@ CONFIG_SCHEMA = {
 }
 
 
-def run(context, config):
-    working_path = Path(context.working_path)
-    output_dir = Path(context.output_dir)
+def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+    working_path = Path(ctx.working_path)
+    output_dir = Path(ctx.output_dir)
 
     if working_path.suffix.lower() != ".zip":
-        context.events.log(
+        runtime.log(
             "extract-archive", "error",
             f"文件类型不支持，仅接受 .zip 文件: {working_path.name}",
         )
-        return context
+        return ctx
 
-    image_exts = _parse_extensions(config.get("image_extensions", "jpg jpeg png gif bmp webp"))
-    video_exts = _parse_extensions(config.get("video_extensions", "mp4 mov mkv wmv flv webm avi"))
-    extract_count = int(config.get("extract_count", 6))
+    image_exts = _parse_extensions(cfg.get("image_extensions", "jpg jpeg png gif bmp webp"))
+    video_exts = _parse_extensions(cfg.get("video_extensions", "mp4 mov mkv wmv flv webm avi"))
+    extract_count = int(cfg.get("extract_count", 6))
 
     try:
         with zipfile.ZipFile(working_path, "r") as zf:
@@ -75,20 +76,20 @@ def run(context, config):
                     video_files.append(entry.filename)
 
             if not image_files:
-                context.events.log(
+                runtime.log(
                     "extract-archive", "error",
                     f"ZIP 中未发现图片文件: {working_path.name}",
                 )
-                return context
+                return ctx
 
             selected_count = min(extract_count, len(image_files))
             selected = random.sample(image_files, selected_count)
     except zipfile.BadZipFile:
-        context.events.log(
+        runtime.log(
             "extract-archive", "error",
             f"ZIP 文件损坏或无法读取: {working_path.name}",
         )
-        return context
+        return ctx
 
     stem = working_path.stem
     subfolder = output_dir / stem
@@ -127,12 +128,12 @@ def run(context, config):
     info_path = subfolder / "info.json"
     info_path.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    context.track_extra_file(subfolder)
-    context.track_extra_file(info_path)
+    ctx.track_extra_file(subfolder)
+    ctx.track_extra_file(info_path)
     for path in extracted_files:
-        context.track_extra_file(path)
+        ctx.track_extra_file(path)
 
-    context.events.log(
+    runtime.log(
         "extract-archive", "success",
         f"已从 {working_path.name} 提取 {selected_count} 张图片到 {subfolder.name}/（图片 {len(image_files)} 张，视频 {len(video_files)} 个，体积 {total_uncompressed} 字节）",
         {
@@ -144,7 +145,7 @@ def run(context, config):
         },
     )
 
-    return context
+    return ctx
 
 
 def _parse_extensions(raw: str) -> set[str]:

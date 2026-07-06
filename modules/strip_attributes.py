@@ -5,14 +5,15 @@ from __future__ import annotations
 import ctypes
 import platform
 from pathlib import Path
+from typing import Any
 
 
 MODULE_META = {
     "slug": "strip-attributes",
     "name": "清除文件属性",
-    "core_version": "1.0.0",
+    "core_version": "2.0.0",
     "tags": ["attribute", "system"],
-    "mode": ["file", "folder"],
+    "atom": ["file", "folder"],
     "description": "清除文件的只读/隐藏属性，确保后续操作不受文件属性限制。",
 }
 
@@ -55,22 +56,22 @@ def _set_attrs(path: str, attrs: int) -> bool:
         return False
 
 
-def _collect_targets(context) -> list[Path]:
-    wp = Path(context.working_path)
-    if context.mode == "file":
+def _collect_targets(ctx: "Any") -> list[Path]:
+    wp = Path(ctx.working_path)
+    if ctx.atom == "file":
         return [wp] if wp.is_file() else []
     if wp.is_dir():
         return [f for f in wp.iterdir() if f.is_file()]
     return []
 
 
-def run(context, config):
+def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
     if platform.system() != "Windows":
-        context.events.log("strip-attributes", "hint", "当前系统非 Windows，跳过属性清除。")
-        return context
+        runtime.log("strip-attributes", "hint", "当前系统非 Windows，跳过属性清除。")
+        return ctx
 
-    remove_readonly = config.get("remove_readonly", True)
-    remove_hidden = config.get("remove_hidden", False)
+    remove_readonly = cfg.get("remove_readonly", True)
+    remove_hidden = cfg.get("remove_hidden", False)
 
     mask = 0
     if remove_readonly:
@@ -79,13 +80,13 @@ def run(context, config):
         mask |= FILE_ATTRIBUTE_HIDDEN
 
     if mask == 0:
-        context.events.log("strip-attributes", "hint", "未选择任何待清除属性。")
-        return context
+        runtime.log("strip-attributes", "hint", "未选择任何待清除属性。")
+        return ctx
 
-    targets = _collect_targets(context)
+    targets = _collect_targets(ctx)
     if not targets:
-        context.events.log("strip-attributes", "hint", "无可操作的文件。")
-        return context
+        runtime.log("strip-attributes", "hint", "无可操作的文件。")
+        return ctx
 
     processed = 0
     failed = 0
@@ -108,20 +109,20 @@ def run(context, config):
 
         if _set_attrs(path_str, new_attrs):
             processed += 1
-            context.events.log(
+            runtime.log(
                 "strip-attributes", "success",
                 f"已清除属性: {f.name} ({', '.join(parts)})",
             )
         else:
             failed += 1
-            context.events.log("strip-attributes", "error", f"清除属性失败: {f.name}")
+            runtime.log("strip-attributes", "error", f"清除属性失败: {f.name}")
 
     if processed > 0:
-        context.events.log(
+        runtime.log(
             "strip-attributes", "message",
             f"属性清除完成: {processed} 个处理, {failed} 个失败。",
         )
     elif failed == 0:
-        context.events.log("strip-attributes", "hint", "未发现需要清除属性的文件。")
+        runtime.log("strip-attributes", "hint", "未发现需要清除属性的文件。")
 
-    return context
+    return ctx

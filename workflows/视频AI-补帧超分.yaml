@@ -2,7 +2,7 @@ meta:
   name: "视频AI处理 - 补帧超分"
   description: "RIFE 补帧 → ML 超分 → FFmpeg 编码 (跳过去隔行)"
   version: "1.0.0"
-mode: file
+atom: file
 steps:
   - module: vs-frame-interpolate
     name: "RIFE 补帧"

@@ -2,7 +2,7 @@ meta:
   name: "视频AI处理 - 去隔行补帧超分"
   description: "完整管线: VapourSynth 去隔行 → RIFE 补帧 → ML 超分 → FFmpeg 编码"
   version: "1.0.0"
-mode: file
+atom: file
 steps:
   - module: vs-deinterlace
     name: "去隔行处理"

@@ -1,4 +1,8 @@
-"""Application entry point for the Shell Worker platform."""
+"""GUI entry point for the Shell Worker platform.
+
+PySide6 is an optional dependency.  If unavailable this module raises an
+import error early so users will fall back to ``main_cli.py`` instead.
+"""
 
 from __future__ import annotations
 

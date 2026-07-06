@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 
 MODULE_META = {
     "slug": "pack-rar",
     "name": "RAR 打包",
-    "core_version": "1.0.0",
+    "core_version": "2.0.0",
     "tags": ["archive", "compress", "rar"],
-    "mode": ["folder"],
+    "atom": ["folder"],
     "description": "调用 WinRAR 将文件夹打包为 .rar 压缩包。",
 }
 
@@ -65,20 +66,20 @@ CONFIG_SCHEMA = {
 }
 
 
-def _build_command(config: dict, rar_exe: str, archive_path: Path, source_path: Path) -> list[str]:
+def _build_command(cfg: dict, rar_exe: str, archive_path: Path, source_path: Path) -> list[str]:
     cmd = [rar_exe, "a"]
 
-    level = config.get("compression_level", "3")
+    level = cfg.get("compression_level", "3")
     cmd.extend(["-m" + str(level)])
 
-    if config.get("solid_archive", False):
+    if cfg.get("solid_archive", False):
         cmd.append("-s")
 
-    password = config.get("password", "").strip()
+    password = cfg.get("password", "").strip()
     if password:
         cmd.append("-hp" + password)
 
-    comment = config.get("comment", "").strip()
+    comment = cfg.get("comment", "").strip()
     comment_file: Path | None = None
     if comment:
         comment_file = archive_path.parent / ".rar_comment.txt"
@@ -90,44 +91,38 @@ def _build_command(config: dict, rar_exe: str, archive_path: Path, source_path: 
     return cmd
 
 
-def run(context, config):
-    rar_exe = config.get("winrar_path", "").strip()
+def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+    rar_exe = cfg.get("winrar_path", "").strip()
     if not rar_exe:
-        context.events.log("pack-rar", "error", "未配置 WinRAR 路径，请在工作流中指定 rar.exe 的完整路径。")
-        return context
+        runtime.log("pack-rar", "error", "未配置 WinRAR 路径，请在工作流中指定 rar.exe 的完整路径。")
+        return ctx
 
     rar_path = Path(rar_exe)
     if not rar_path.is_file():
-        context.events.log("pack-rar", "error", f"WinRAR 可执行文件不存在: {rar_exe}")
-        return context
+        runtime.log("pack-rar", "error", f"WinRAR 可执行文件不存在: {rar_exe}")
+        return ctx
 
-    source = Path(context.working_path)
+    source = Path(ctx.working_path)
     if not source.exists():
-        context.events.log("pack-rar", "error", f"源文件夹不存在: {source}")
-        return context
+        runtime.log("pack-rar", "error", f"源文件夹不存在: {source}")
+        return ctx
 
-    archive_name = config.get("archive_name", "").strip()
+    archive_name = cfg.get("archive_name", "").strip()
     if not archive_name:
         archive_name = source.name
-    archive_path = context.output_dir / (archive_name + ".rar")
+    archive_path = ctx.output_dir / (archive_name + ".rar")
 
-    cmd = _build_command(config, rar_exe, archive_path, source)
+    cmd = _build_command(cfg, rar_exe, archive_path, source)
     comment_file = archive_path.parent / ".rar_comment.txt"
 
-    context.events.log("pack-rar", "hint", f"WinRAR 命令行: {' '.join(cmd)}")
-    context.events.log("pack-rar", "message", f"开始打包: {source.name} → {archive_path.name} ...")
+    runtime.log("pack-rar", "hint", f"WinRAR 命令行: {' '.join(cmd)}")
+    runtime.log("pack-rar", "message", f"开始打包: {source.name} → {archive_path.name} ...")
 
     try:
-        import winpty  # noqa: F401
-    except ImportError:
-        context.events.log("pack-rar", "error", "pywinpty 未安装，无法使用终端，请运行 pip install pywinpty。")
-        return context
-
-    try:
-        result = context.run_command(cmd)
+        result = runtime.spawn(cmd)
     except OSError as e:
-        context.events.log("pack-rar", "error", f"WinRAR 启动失败: {e}")
-        return context
+        runtime.log("pack-rar", "error", f"WinRAR 启动失败: {e}")
+        return ctx
     finally:
         if comment_file.exists():
             try:
@@ -136,17 +131,17 @@ def run(context, config):
                 pass
 
     if result.is_success:
-        context.track_extra_file(archive_path)
-        context.events.log("pack-rar", "success", f"打包完成: {archive_path.name}")
+        ctx.track_extra_file(archive_path)
+        runtime.log("pack-rar", "success", f"打包完成: {archive_path.name}")
 
-        if config.get("delete_after", False):
+        if cfg.get("delete_after", False):
             try:
                 import shutil
                 shutil.rmtree(source)
-                context.events.log("pack-rar", "message", f"已删除源文件夹: {source.name}")
+                runtime.log("pack-rar", "message", f"已删除源文件夹: {source.name}")
             except OSError as e:
-                context.events.log("pack-rar", "warning", f"删除源文件夹失败: {e}")
+                runtime.log("pack-rar", "warning", f"删除源文件夹失败: {e}")
     else:
-        context.events.log("pack-rar", "error", f"WinRAR 返回非零退出码: {result.exit_code}")
+        runtime.log("pack-rar", "error", f"WinRAR 返回非零退出码: {result.exit_code}")
 
-    return context
+    return ctx

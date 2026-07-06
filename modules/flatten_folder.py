@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 
 MODULE_META = {
     "slug": "flatten-folder",
     "name": "递归提取文件",
-    "core_version": "1.0.0",
+    "core_version": "2.0.0",
     "tags": ["flatten", "organize"],
-    "mode": ["folder"],
+    "atom": ["folder"],
     "description": "递归移动子文件夹文件到根目录，按深度层级添加数字前缀辅助排序。",
 }
 
@@ -34,12 +35,6 @@ CONFIG_SCHEMA = {
 
 
 def _assign_prefixes(root: Path, subfolder_first: bool) -> dict[Path, str]:
-    """递归为每个目录分配数字层级前缀。
-
-    subfolder_first=True：根目录 999，一级子目录 1/2/3…
-    subfolder_first=False：根目录 1，一级子目录 2/3/4…
-    二级起始终从 1 开始编号拼接父前缀，如 2_1、2_2。
-    """
     prefix_map: dict[Path, str] = {}
 
     if subfolder_first:
@@ -75,14 +70,14 @@ def _assign_children(
         _assign_children(child, root, prefix_map, start_index=1)
 
 
-def run(context, config):
-    working_dir = Path(context.working_path)
+def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+    working_dir = Path(ctx.working_path)
     if not working_dir.is_dir():
-        context.events.log("flatten-folder", "error", "working_path 不是目录。")
-        return context
+        runtime.log("flatten-folder", "error", "working_path 不是目录。")
+        return ctx
 
-    subfolder_first = config.get("subfolder_first", True)
-    separator = config.get("prefix_separator", "_")
+    subfolder_first = cfg.get("subfolder_first", True)
+    separator = cfg.get("prefix_separator", "_")
 
     prefix_map = _assign_prefixes(working_dir, subfolder_first)
 
@@ -109,7 +104,7 @@ def run(context, config):
                 moved += 1
             except OSError as e:
                 failed += 1
-                context.events.log(
+                runtime.log(
                     "flatten-folder", "error",
                     f"移动失败: {f.name} ({e})",
                 )
@@ -128,13 +123,13 @@ def run(context, config):
             pass
 
     if moved > 0:
-        context.events.log(
+        runtime.log(
             "flatten-folder", "message",
             f"提取完成: {moved} 个文件已移至根目录, {failed} 个失败, "
             f"已清理 {removed_dirs} 个空子目录。",
             {"moved": moved, "failed": failed, "removed_dirs": removed_dirs},
         )
     else:
-        context.events.log("flatten-folder", "message", "未发现需要提取的文件。")
+        runtime.log("flatten-folder", "message", "未发现需要提取的文件。")
 
-    return context
+    return ctx

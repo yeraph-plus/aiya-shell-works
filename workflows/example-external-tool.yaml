@@ -1,0 +1,12 @@
+meta:
+  name: External Tool
+  description: atom=file + per-unit — invoke resources/mock_tool on each file via runtime.spawn.
+  version: "1.0.0"
+atom: file
+scope: 1
+recurse: true
+steps:
+  - module: verify-run-external-tool
+    name: Mock Tool
+    params:
+      mock_tool_path: ""

@@ -9,25 +9,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .pipeline import PipelineContext
-
-
-def ensure_pywinpty(context: "PipelineContext", slug: str) -> bool:
-    """Check that pywinpty is importable.
-
-    Returns True if available.  Otherwise logs an error to *context.events*
-    and returns False.
-    """
-    try:
-        import winpty  # noqa: F401
-    except ImportError:
-        context.events.log(
-            slug,
-            "error",
-            "pywinpty 未安装，无法使用终端，请运行 pip install pywinpty。",
-        )
-        return False
-    return True
+    from .context import PipelineContext
+    from .runtime import PipelineRuntime
 
 
 def collect_file_targets(
@@ -35,16 +18,17 @@ def collect_file_targets(
     *,
     extensions: frozenset[str] | None = None,
 ) -> list[Path]:
-    """Return the list of file paths this module should process.
+    """Return files this module should process.
 
-    In *file* mode returns the single working path (if it is a file).
-    In *folder* mode returns direct children (if *extensions* is supplied
-    the result is also filtered to files whose suffix matches).
+    Routing by ``context.atom`` (new contract):
+
+    * ``atom == "file"`` → ``working_path`` itself (must be a file)
+    * ``atom == "folder"`` or atom == "file" with recurse=False dir →
+      direct file children of ``working_path``
+    * any other atom → empty list
     """
     wp = Path(context.working_path)
-    if context.mode == "file":
-        if not wp.is_file():
-            return []
+    if context.atom == "file" and wp.is_file():
         if extensions is not None and wp.suffix.lower() not in extensions:
             return []
         return [wp]
@@ -62,42 +46,47 @@ def make_unique_path(
     separator: str = "_",
     parenthetical: bool = False,
 ) -> Path:
-    """Return *target* unchanged, or a sibling with a unique name.
+    """Return *target* unchanged, or a sibling with a unique name."""
 
-    The de-duplication strategy is controlled by *separator* and
-    *parenthetical*:
-
-    * ``separator="_"``, ``parenthetical=False`` → ``stem_1.ext``
-    * ``separator=" "``, ``parenthetical=True`` → ``stem (1).ext``
-
-    An infinite-loop guard is included (max 10 000 attempts).
-    """
     if not target.exists():
         return target
-
     parent = target.parent
     suffix = "".join(target.suffixes)
     stem = target.name
     if suffix:
         stem = stem[: -len(suffix)]
-
     if parenthetical:
         fmt = "{stem} ({counter}){suffix}"
     else:
         fmt = "{stem}{separator}{counter}{suffix}"
-
     for counter in range(1, 10001):
         candidate = parent / fmt.format(
-            stem=stem, counter=counter, suffix=suffix, separator=separator
-        )
+            stem=stem, counter=counter, suffix=suffix, separator=separator)
         if not candidate.exists():
             return candidate
-
     raise RuntimeError(f"无法生成唯一文件名: {target} (尝试 10000 次)")
 
 
 def parse_extension_set(raw: str) -> frozenset[str]:
     """Split whitespace-delimited *raw* into a lower-cased extension set."""
+
     return frozenset(
         e.strip().lower().lstrip(".") for e in raw.split() if e.strip()
     )
+
+
+def ensure_pty_available(runtime: "PipelineRuntime", slug: str) -> bool:
+    """Check that a PTY backend is importable.  Logs an error if not."""
+
+    import sys
+    if sys.platform == "win32":
+        try:
+            import winpty  # noqa: F401
+            return True
+        except ImportError:
+            runtime.log(slug, "warning",
+                        "pywinpty 未安装，使用子进程回退（无交互 stdin）。",
+                        {"backend": "subprocess"})
+            return False
+    # POSIX pty is part of stdlib; subprocess is implicit fallback.
+    return True

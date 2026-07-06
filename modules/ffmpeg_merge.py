@@ -5,14 +5,15 @@ from __future__ import annotations
 import re
 import tempfile
 from pathlib import Path
+from typing import Any
 
 
 MODULE_META = {
     "slug": "ffmpeg-merge",
     "name": "FFmpeg 合并 m3u8",
-    "core_version": "1.0.0",
+    "core_version": "2.0.0",
     "tags": ["ffmpeg", "merge", "m3u8", "hls", "download"],
-    "mode": ["file", "input"],
+    "atom": ["file", "line"],
     "description": "使用 FFmpeg 下载并合并 m3u8/m3u/HLS 播放列表为单个文件，支持自定义 HTTP 请求头、断线重连、AES-128 解密。",
 }
 
@@ -144,8 +145,8 @@ _SOFTWARE_CODECS = {
 _HEX_KEY_PATTERN = re.compile(r"^[0-9a-fA-F]{32}$")
 
 
-def _resolve_ffmpeg_path(config: dict) -> str | None:
-    custom = config.get("ffmpeg_path", "").strip()
+def _resolve_ffmpeg_path(cfg: dict) -> str | None:
+    custom = cfg.get("ffmpeg_path", "").strip()
     if custom:
         p = Path(custom)
         if p.exists():
@@ -160,11 +161,11 @@ def _resolve_ffmpeg_path(config: dict) -> str | None:
     return None
 
 
-def _resolve_input(context) -> str | None:
-    if context.mode == "input":
-        line = context.shared.get("input_line", "").strip()
+def _resolve_input(ctx: "Any") -> str | None:
+    if ctx.atom == "line":
+        line = ctx.shared.get("input_line", "").strip()
         return line if line else None
-    return str(context.working_path)
+    return str(ctx.working_path)
 
 
 def _derive_output_name(source: str, output_format: str) -> str:
@@ -188,24 +189,24 @@ def _output_path(name: str, output_dir: Path) -> Path:
         counter += 1
 
 
-def _build_headers(config: dict) -> list[str]:
+def _build_headers(cfg: dict) -> list[str]:
     args: list[str] = []
-    ua = config.get("user_agent", "").strip()
+    ua = cfg.get("user_agent", "").strip()
     if ua:
         args.extend(["-user_agent", ua])
 
     custom_headers: list[str] = []
-    referer = config.get("referer", "").strip()
+    referer = cfg.get("referer", "").strip()
     if referer:
         custom_headers.append(f"Referer: {referer}")
-    origin = config.get("origin", "").strip()
+    origin = cfg.get("origin", "").strip()
     if origin:
         custom_headers.append(f"Origin: {origin}")
-    cookie = config.get("cookie", "").strip()
+    cookie = cfg.get("cookie", "").strip()
     if cookie:
         custom_headers.append(f"Cookie: {cookie}")
 
-    extra = config.get("extra_headers", "").strip()
+    extra = cfg.get("extra_headers", "").strip()
     if extra:
         for line in extra.splitlines():
             line = line.strip()
@@ -218,10 +219,10 @@ def _build_headers(config: dict) -> list[str]:
     return args
 
 
-def _build_reconnect_args(config: dict) -> list[str]:
-    if not config.get("reconnect", True):
+def _build_reconnect_args(cfg: dict) -> list[str]:
+    if not cfg.get("reconnect", True):
         return []
-    delay = config.get("reconnect_delay", 5)
+    delay = cfg.get("reconnect_delay", 5)
     return [
         "-reconnect", "1",
         "-reconnect_at_eof", "1",
@@ -230,8 +231,8 @@ def _build_reconnect_args(config: dict) -> list[str]:
     ]
 
 
-def _build_key_args(config: dict) -> list[str] | None:
-    key = config.get("key", "").strip()
+def _build_key_args(cfg: dict) -> list[str] | None:
+    key = cfg.get("key", "").strip()
     if not key:
         return None
     if _HEX_KEY_PATTERN.match(key):
@@ -260,33 +261,33 @@ def _key_info_from_hex(hex_key: str) -> list[str]:
 def _build_command(
     source: str,
     output_file: str,
-    config: dict,
+    cfg: dict,
 ) -> list[str]:
     cmd: list[str] = []
 
-    if config.get("overwrite", True):
+    if cfg.get("overwrite", True):
         cmd.append("-y")
 
-    cmd.extend(_build_headers(config))
-    cmd.extend(_build_reconnect_args(config))
+    cmd.extend(_build_headers(cfg))
+    cmd.extend(_build_reconnect_args(cfg))
 
-    timeout = config.get("segment_timeout", 10000000)
+    timeout = cfg.get("segment_timeout", 10000000)
     cmd.extend(["-timeout", str(timeout)])
 
-    key_args = _build_key_args(config)
+    key_args = _build_key_args(cfg)
     if key_args:
         cmd.extend(key_args)
 
     cmd.extend(["-i", source])
 
-    video_codec = config.get("video_codec", "copy")
+    video_codec = cfg.get("video_codec", "copy")
     if video_codec == "copy":
         cmd.extend(["-c:v", "copy"])
     else:
         software_encoder = _SOFTWARE_CODECS.get(video_codec, video_codec)
         cmd.extend(["-c:v", software_encoder])
 
-    audio_codec = config.get("audio_codec", "copy")
+    audio_codec = cfg.get("audio_codec", "copy")
     if audio_codec == "copy":
         cmd.extend(["-c:a", "copy"])
     else:
@@ -296,77 +297,68 @@ def _build_command(
     return cmd
 
 
-def run(context, config):
-    source = _resolve_input(context)
+def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+    source = _resolve_input(ctx)
     if not source:
-        context.events.log("ffmpeg-merge", "message", "无输入源，跳过。")
-        return context
+        runtime.log("ffmpeg-merge", "message", "无输入源，跳过。")
+        return ctx
 
-    if context.mode == "file":
-        wp = Path(context.working_path)
+    if ctx.atom == "file":
+        wp = Path(ctx.working_path)
         if not wp.is_file() or wp.suffix.lower() not in _SUPPORTED_EXTENSIONS:
-            context.events.log(
+            runtime.log(
                 "ffmpeg-merge", "message",
                 f"不支持的文件类型，仅接受 {', '.join(sorted(_SUPPORTED_EXTENSIONS))}。",
             )
-            return context
+            return ctx
 
-    ffmpeg = _resolve_ffmpeg_path(config)
+    ffmpeg = _resolve_ffmpeg_path(cfg)
     if ffmpeg is None:
-        context.events.log(
+        runtime.log(
             "ffmpeg-merge", "error",
             "FFmpeg 未找到，请配置路径或将 ffmpeg.exe 放置到 resources/ffmpeg/ 下。",
         )
-        return context
+        return ctx
 
-    output_format = config.get("output_format", "mp4")
-    output_dir = Path(context.output_dir)
+    output_format = cfg.get("output_format", "mp4")
+    output_dir = Path(ctx.output_dir)
     output_name = _derive_output_name(source, output_format)
     output_file = _output_path(output_name, output_dir)
 
-    cmd = _build_command(source, str(output_file), config)
+    cmd = _build_command(source, str(output_file), cfg)
 
-    context.events.log(
+    runtime.log(
         "ffmpeg-merge", "hint",
         f"FFmpeg 命令行: {' '.join(cmd)}",
     )
-    context.events.log(
+    runtime.log(
         "ffmpeg-merge", "message",
         f"开始合并: {source} → {output_file.name}",
     )
 
     try:
-        import winpty  # noqa: F401
-    except ImportError:
-        context.events.log(
-            "ffmpeg-merge", "error",
-            "pywinpty 未安装，无法使用终端，请运行 pip install pywinpty。",
-        )
-        return context
-
-    try:
         cwd = (
             str(Path(source).parent)
-            if context.mode == "file" and Path(source).exists()
+            if ctx.atom == "file" and Path(source).exists()
             else str(output_dir)
         )
-        result = context.run_command(cmd, cwd=cwd)
+        result = runtime.spawn(cmd, cwd=cwd)
     except OSError as e:
-        context.events.log("ffmpeg-merge", "error", f"FFmpeg 启动失败: {e}")
-        return context
+        runtime.log("ffmpeg-merge", "error", f"FFmpeg 启动失败: {e}")
+        return ctx
 
     if result.is_success:
-        context.track_extra_file(output_file)
-        context.events.log(
+        ctx.track_extra_file(output_file)
+        runtime.log(
             "ffmpeg-merge", "success",
             f"合并完成: {output_file.name}",
             {"output_file": str(output_file), "source": source},
         )
     else:
-        context.events.log(
+        runtime.log(
             "ffmpeg-merge", "error",
             f"FFmpeg 返回非零退出码: {result.exit_code}",
             {"source": source},
         )
 
-    return context
+    return ctx

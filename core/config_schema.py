@@ -1,4 +1,9 @@
-"""Validation helpers for module CONFIG_SCHEMA and workflow step params."""
+"""Validates module CONFIG_SCHEMA and normalizes workflow step params.
+
+Copied from the legacy ``config_schema.py`` to preserve the 8 supported
+parameter types.  No scheme shift here — work to validate new atom/scope
+lives on the module manager side.
+"""
 
 from __future__ import annotations
 
@@ -10,10 +15,10 @@ SUPPORTED_CONFIG_TYPES = frozenset(
     {"int", "float", "str", "bool", "select", "radio", "file_path", "folder_path"}
 )
 
+_MISSING = object()
+
 
 class _ConfigError(ValueError):
-    """Common base for config-related validation errors."""
-
     def __init__(self, errors: list[str], default_message: str = "Invalid config.") -> None:
         self.errors = tuple(errors)
         message = "; ".join(self.errors) if self.errors else default_message
@@ -21,15 +26,11 @@ class _ConfigError(ValueError):
 
 
 class ConfigSchemaValidationError(_ConfigError):
-    """Raised when a module CONFIG_SCHEMA does not follow the platform spec."""
-
     def __init__(self, errors: list[str]) -> None:
         super().__init__(errors, default_message="Invalid CONFIG_SCHEMA.")
 
 
 class ConfigValidationError(_ConfigError):
-    """Raised when workflow step params do not satisfy a module schema."""
-
     def __init__(self, errors: list[str]) -> None:
         super().__init__(errors, default_message="Invalid step params.")
 
@@ -41,8 +42,7 @@ def validate_config_schema(schema: Any) -> tuple[bool, tuple[str, ...]]:
         return False, ("CONFIG_SCHEMA 必须是字典。",)
 
     errors: list[str] = []
-    schema_type = schema.get("type")
-    if schema_type != "object":
+    if schema.get("type") != "object":
         errors.append("CONFIG_SCHEMA.type 必须为 'object'。")
 
     properties = schema.get("properties")
@@ -69,32 +69,26 @@ def validate_config_schema(schema: Any) -> tuple[bool, tuple[str, ...]]:
         if not isinstance(field_schema, Mapping):
             errors.append(f"{prefix} 必须是字典。")
             continue
-
         field_type = field_schema.get("type")
         if field_type not in SUPPORTED_CONFIG_TYPES:
             supported = ", ".join(sorted(SUPPORTED_CONFIG_TYPES))
             errors.append(f"{prefix}.type 必须是以下之一: {supported}。")
             continue
-
         title = field_schema.get("title")
         if title is not None and (not isinstance(title, str) or not title.strip()):
             errors.append(f"{prefix}.title 提供时必须是非空字符串。")
-
         description = field_schema.get("description")
         if description is not None and not isinstance(description, str):
             errors.append(f"{prefix}.description 提供时必须是字符串。")
-
         field_required = field_schema.get("required")
         if field_required is not None and not isinstance(field_required, bool):
             errors.append(f"{prefix}.required 提供时必须是布尔值。")
-
         default = field_schema.get("default", _MISSING)
         if default is not _MISSING:
             try:
                 _validate_single_value(field_name, field_type, default, field_schema)
             except ConfigValidationError as exc:
-                errors.extend(f"{prefix}.default 无效: {detail}" for detail in exc.errors)
-
+                errors.extend(f"{prefix}.default 无效: {d}" for d in exc.errors)
         minimum = field_schema.get("min", _MISSING)
         maximum = field_schema.get("max", _MISSING)
         if minimum is not _MISSING or maximum is not _MISSING:
@@ -106,31 +100,24 @@ def validate_config_schema(schema: Any) -> tuple[bool, tuple[str, ...]]:
                 if maximum is not _MISSING and not _is_number(maximum):
                     errors.append(f"{prefix}.max 必须是数字。")
                 if (
-                    minimum is not _MISSING
-                    and maximum is not _MISSING
-                    and _is_number(minimum)
-                    and _is_number(maximum)
+                    minimum is not _MISSING and maximum is not _MISSING
+                    and _is_number(minimum) and _is_number(maximum)
                     and minimum > maximum
                 ):
                     errors.append(f"{prefix}.min 不能大于 max。")
-
         options = field_schema.get("options", _MISSING)
         if field_type in {"select", "radio"}:
             if not isinstance(options, list) or not options:
                 errors.append(f"{prefix}.options 必须是非空列表。")
             elif any(not _is_scalar_option(item) for item in options):
-                errors.append(
-                    f"{prefix}.options 只能包含字符串、数字或布尔值。"
-                )
+                errors.append(f"{prefix}.options 只能包含字符串、数字或布尔值。")
         elif options is not _MISSING and not isinstance(options, list):
             errors.append(f"{prefix}.options 提供时必须是列表。")
 
     if required_names:
-        missing_fields = sorted(name for name in required_names if name not in properties)
-        if missing_fields:
-            joined = ", ".join(missing_fields)
-            errors.append(f"CONFIG_SCHEMA.required 引用了未定义字段: {joined}。")
-
+        missing = sorted(n for n in required_names if n not in properties)
+        if missing:
+            errors.append(f"CONFIG_SCHEMA.required 引用了未定义字段: {', '.join(missing)}。")
     return not errors, tuple(errors)
 
 
@@ -138,16 +125,12 @@ def normalize_config_params(
     schema: Mapping[str, Any],
     params: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    """Validate workflow step params and fill defaults defined in schema.
-
-    The *schema* is assumed to have already passed ``validate_config_schema()``
-    during module scanning — this function does not re-validate it.
-    """
+    """Validate step params and fill defaults from a (validated) schema."""
 
     if params is None:
-        raw_params: dict[str, Any] = {}
+        raw: dict[str, Any] = {}
     elif isinstance(params, Mapping):
-        raw_params = dict(params)
+        raw = dict(params)
     else:
         raise ConfigValidationError(["步骤参数必须是字典。"])
 
@@ -160,38 +143,31 @@ def normalize_config_params(
     errors: list[str] = []
     normalized: dict[str, Any] = {}
 
-    for key in raw_params:
+    for key in raw:
         if key not in properties:
             errors.append(f"存在未声明参数: {key}")
 
     for field_name, field_schema in properties.items():
-        typed_schema = dict(field_schema)
-        field_type = typed_schema["type"]
-        is_required = bool(typed_schema.get("required", False) or field_name in top_required)
-
-        if field_name in raw_params:
-            value = raw_params[field_name]
-        elif "default" in typed_schema:
-            value = typed_schema["default"]
+        typed = dict(field_schema)
+        field_type = typed["type"]
+        is_required = bool(typed.get("required", False) or field_name in top_required)
+        if field_name in raw:
+            value = raw[field_name]
+        elif "default" in typed:
+            value = typed["default"]
         elif is_required:
             errors.append(f"缺少必填参数: {field_name}")
             continue
         else:
             continue
-
         try:
-            normalized[field_name] = _validate_single_value(
-                field_name, field_type, value, typed_schema
-            )
+            normalized[field_name] = _validate_single_value(field_name, field_type, value, typed)
         except ConfigValidationError as exc:
             errors.extend(exc.errors)
 
     if errors:
         raise ConfigValidationError(errors)
     return normalized
-
-
-_MISSING = object()
 
 
 def _validate_single_value(
@@ -205,55 +181,45 @@ def _validate_single_value(
             raise ConfigValidationError([f"参数 {field_name} 必须是整数。"])
         _validate_number_range(field_name, value, field_schema)
         return value
-
     if field_type == "float":
         if not _is_number(value):
             raise ConfigValidationError([f"参数 {field_name} 必须是数字。"])
-        numeric_value = float(value)
-        _validate_number_range(field_name, numeric_value, field_schema)
-        return numeric_value
-
+        v = float(value)
+        _validate_number_range(field_name, v, field_schema)
+        return v
     if field_type == "str":
         if not isinstance(value, str):
             raise ConfigValidationError([f"参数 {field_name} 必须是字符串。"])
         return value
-
     if field_type == "bool":
         if not isinstance(value, bool):
             raise ConfigValidationError([f"参数 {field_name} 必须是布尔值。"])
         return value
-
     if field_type in {"select", "radio"}:
-        raw_options = field_schema.get("options", [])
-        valid_values = {
+        valid = {
             item["value"] if isinstance(item, Mapping) and "value" in item else item
-            for item in raw_options
+            for item in field_schema.get("options", [])
         }
-        if value not in valid_values:
+        if value not in valid:
             raise ConfigValidationError(
-                [f"参数 {field_name} 必须是以下选项之一: {sorted(valid_values)}。"]
+                [f"参数 {field_name} 必须是以下选项之一: {sorted(valid)}。"]
             )
         return value
-
     if field_type in {"file_path", "folder_path"}:
         if isinstance(value, Path):
             return str(value)
         if not isinstance(value, str):
-            readable_type = "文件路径" if field_type == "file_path" else "文件夹路径"
-            raise ConfigValidationError([f"参数 {field_name} 必须是{readable_type}字符串。"])
+            raise ConfigValidationError(
+                [f"参数 {field_name} 必须是路径字符串。"]
+            )
         return value
-
     raise ConfigValidationError([f"参数 {field_name} 使用了不支持的类型: {field_type}。"])
 
 
-def _validate_number_range(
-    field_name: str,
-    value: int | float,
-    field_schema: Mapping[str, Any],
-) -> None:
+def _validate_number_range(field_name: str, value: int | float, field_schema: Mapping[str, Any]) -> None:
+    errors: list[str] = []
     minimum = field_schema.get("min", _MISSING)
     maximum = field_schema.get("max", _MISSING)
-    errors: list[str] = []
     if minimum is not _MISSING and value < minimum:
         errors.append(f"参数 {field_name} 不能小于 {minimum}。")
     if maximum is not _MISSING and value > maximum:

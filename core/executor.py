@@ -1,4 +1,21 @@
-"""Workflow execution engine independent from the GUI layer."""
+﻿"""Workflow executor: atom x scope x recurse driven unit dispatch.
+
+Single-threaded execution with per-unit event-bus isolation.  Scope values
+control how inputs are batched into tasks:
+
+* ``scope=1`` (per-unit) — every listed file / folder / line is its own
+  ctx.  Executor calls ``runtime.replace_bus()`` before each unit so
+  each one's events never bleed into the next.
+* ``scope=0`` (shared)  — all inputs are merged into a single merged
+  working tree (see ``files.py``) and the workflow runs exactly once
+  over the merged output folder.  The module rglobs the working tree
+  itself.
+* Scope values > 1 are reserved for future batch slicing; currently
+  treated as 1.
+
+Cancellation is checked at step boundaries.  Module return-value contract
+is ``PipelineContext | None | dict[str, ctx]``.
+"""
 
 from __future__ import annotations
 
@@ -6,33 +23,30 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-import yaml
-
 from .config_schema import (
     ConfigSchemaValidationError,
     ConfigValidationError,
     normalize_config_params,
 )
-from .handler_input import InputHandler
-from .handler_file import FileHandler
-from .input_inspector import InputInspector
-from .module_manager import ModuleDefinition, ModuleManager
-from .pipeline import PipelineContext, PipelineEvent, PipelineMode
-from .workflow_loader import (
-    WorkflowDefinition,
-    WorkflowLoader,
+from .context import PipelineContext
+from .exceptions import (
+    PipelineCancelledError,
+    PipelineExecutionError,
     WorkflowValidationError,
 )
+from .files import WorkingCopier, units_from_plan
+from .input import InputPlan, resolve_input
+from .module_manager import ModuleDefinition, ModuleManager
+from .runtime import PipelineRuntime
+from .workflow_loader import WorkflowDefinition, WorkflowLoader
 
-EventCallback = Callable[[PipelineEvent], None]
+EventCallback = Callable[[Any], None]
 ProgressCallback = Callable[[dict[str, Any]], None]
 CancelCallback = Callable[[], bool]
 
 
 @dataclass(frozen=True, slots=True)
-class PreparedWorkflowStep:
-    """Runtime-ready workflow step with validated module and params."""
-
+class PreparedStep:
     index: int
     name: str
     module_slug: str
@@ -40,342 +54,259 @@ class PreparedWorkflowStep:
     params: dict[str, Any]
 
 
-class PipelineExecutionError(RuntimeError):
-    """Raised when the workflow cannot start due to invalid setup."""
-
-
-class PipelineCancelledError(RuntimeError):
-    """Raised when an execution is cancelled at a safe boundary."""
-
-
 class PipelineExecutor:
-    """Execute workflow definitions with unit-level error isolation."""
+    """Execute a workflow definition; one instance, one execution."""
 
     def __init__(
         self,
         module_manager: ModuleManager,
         *,
-        event_callback: EventCallback | None = None,
+        runtime: PipelineRuntime | None = None,
         progress_callback: ProgressCallback | None = None,
         cancel_requested: CancelCallback | None = None,
+        event_listener: EventCallback | None = None,
     ) -> None:
         self.module_manager = module_manager
-        self.event_callback = event_callback
+        self.runtime = runtime or PipelineRuntime()
         self.progress_callback = progress_callback
         self.cancel_requested = cancel_requested
+        self.event_listener = event_listener
 
     def execute(
         self,
         workflow: WorkflowDefinition | Mapping[str, Any] | str | Path,
         *,
         output_dir: str | Path,
-        input_path: str | Path | None = None,
-        input_paths: list[str | Path] | None = None,
-        input_text: str | None = None,
+        input_plan: InputPlan | None = None,
         direct_mode: bool = False,
         shared: Mapping[str, Any] | None = None,
+        files: list[str | Path] | None = None,
+        recurse: bool = False,
+        lines_text: str | None = None,
+        lines_file: str | Path | None = None,
     ) -> dict[str, Any]:
-        """Run a workflow and return a summary consumable by GUI or CLI callers."""
+        """Run a workflow.  Returns a summary dict."""
 
-        workflow_definition = _resolve_workflow_definition(workflow)
-        prepared_steps = self._prepare_steps(workflow_definition)
-        file_handler = FileHandler(output_dir, direct_mode=direct_mode)
-        input_handler = InputHandler()
-        units = self._build_units(
-            workflow_definition,
-            file_handler,
-            input_handler,
-            input_path,
-            input_paths,
-            input_text,
+        active_runtime = self.runtime
+        if self.event_listener is not None:
+            active_runtime.subscribe(self.event_listener)
+
+        definition = _resolve_workflow_definition(workflow)
+        plan = input_plan or resolve_input(
+            files=files, recurse=recurse,
+            lines_text=lines_text, lines_file=lines_file,
         )
-        total_units = len(units)
+        self._check_plan_compat(definition, plan)
+
+        steps = self._prepare_steps(definition)
+        copier = WorkingCopier(output_dir, direct_mode=direct_mode)
+
+        units = self._build_units(definition, plan, copier, shared)
+        total = len(units)
         errors: list[dict[str, Any]] = []
-        unit_results: list[dict[str, Any]] = []
-        successful_units = 0
+        successful = 0
+        results: list[dict[str, Any]] = []
         cancelled = False
 
-        self._emit_event(
-            "executor",
-            "message",
-            f"开始执行工作流: {workflow_definition.meta.name} "
-            f"(mode={workflow_definition.mode}, units={total_units}, direct={direct_mode})",
+        active_runtime.log(
+            "executor", "message",
+            f"start workflow: {definition.meta.name} "
+            f"(atom={definition.atom}, scope={definition.scope}, "
+            f"recurse={definition.recurse}, units={total}, direct={direct_mode})",
         )
-        self._progress(
-            current=0,
-            total=total_units,
-            unit=None,
-            status="starting",
-        )
+        self._report_progress(0, total, None, "starting")
 
         for warning in self.module_manager.warnings:
-            self._emit_event("executor", "warning", f"模块扫描警告: {warning}")
+            active_runtime.log("executor", "warning", f"module scan warning: {warning}")
 
-        shared_context: PipelineContext | None = None
-        for index, unit in enumerate(units, start=1):
+        for idx, unit in enumerate(units, start=1):
             try:
-                self._raise_if_cancelled()
+                self._raise_if_cancelled(active_runtime)
             except PipelineCancelledError as exc:
                 cancelled = True
-                self._emit_event("executor", "warning", str(exc))
+                active_runtime.log("executor", "warning", str(exc))
                 break
             try:
-                mode: PipelineMode = workflow_definition.mode
-                base_ctx = (
-                    shared_context
-                    if mode == "cycle" and index > 1 and shared_context is not None
-                    else None
-                )
-                context = self._prepare_context(
-                    file_handler=file_handler,
-                    input_handler=input_handler,
-                    mode=mode,
-                    unit=unit,
-                    shared=shared,
-                    base_context=base_ctx,
-                )
-                final_context = self._run_unit(
-                    context=context,
-                    unit_index=index,
-                    total_units=total_units,
-                    prepared_steps=prepared_steps,
-                )
+                if definition.scope != 0:
+                    active_runtime.replace_bus()
 
-                successful_units += 1
-                unit_results.append(
-                    {
-                        "success": True,
-                        "unit": _unit_display(unit),
-                        "working_path": str(final_context.working_path),
-                        "original_input": _display_unit_name(final_context.original_input),
-                    }
+                ctx = self._prepare_context(definition, plan, copier, unit, shared=shared)
+                final_ctx = self._run_unit(
+                    ctx=ctx, runtime=active_runtime,
+                    unit_index=idx, total_units=total, steps=steps,
                 )
-                self._progress(
-                    current=index,
-                    total=total_units,
-                    unit=_unit_display(unit),
-                    status="completed",
-                )
-                if mode == "cycle":
-                    shared_context = final_context
-            except PipelineCancelledError as exc:
+                successful += 1
+                results.append({
+                    "success": True,
+                    "unit": _unit_display(unit),
+                    "working_path": str(final_ctx.working_path),
+                    "original_input": _display_name(final_ctx.original_input),
+                })
+                self._report_progress(idx, total, _unit_display(unit), "completed")
+            except PipelineCancelledError:
                 cancelled = True
-                self._emit_event("executor", "warning", str(exc))
+                active_runtime.log(
+                    "executor", "warning",
+                    f"cancelled: unit {idx}/{total} ({_unit_display(unit) or '<none>'})"
+                )
                 break
             except Exception as exc:
-                error = {
+                err = {
                     "unit": _unit_display(unit),
                     "error": str(exc),
                     "type": type(exc).__name__,
                 }
-                errors.append(error)
-                unit_results.append(
-                    {
-                        "success": False,
-                        "unit": error["unit"],
-                        "error": error["error"],
-                        "type": error["type"],
-                    }
+                errors.append(err)
+                results.append({
+                    "success": False, "unit": err["unit"],
+                    "error": err["error"], "type": err["type"],
+                })
+                active_runtime.log(
+                    "executor", "error",
+                    f"unit failed [{idx}/{total}]: "
+                    f"{err['unit'] or '<none>'} -> {err['error']}",
                 )
-                self._emit_event(
-                    "executor",
-                    "error",
-                    f"处理单元失败 [{index}/{total_units}]: "
-                    f"{error['unit'] or '<none>'} -> {error['error']}",
-                )
-                self._progress(
-                    current=index,
-                    total=total_units,
-                    unit=_unit_display(unit),
-                    status="failed",
-                )
+                self._report_progress(idx, total, _unit_display(unit), "failed")
 
-        completed_units = successful_units + len(errors)
+        completed = successful + len(errors)
         success = not errors and not cancelled
         summary = {
             "success": success,
             "cancelled": cancelled,
-            "processed_units": total_units,
-            "successful_units": successful_units,
+            "processed_units": total,
+            "successful_units": successful,
             "failed_units": len(errors),
             "errors": errors,
-            "results": unit_results,
-            "workflow": workflow_definition.meta.name,
-            "mode": workflow_definition.mode,
-            "output_dir": str(file_handler.output_dir),
+            "results": results,
+            "workflow": definition.meta.name,
+            "atom": definition.atom,
+            "scope": definition.scope,
+            "output_dir": str(copier.output_dir),
         }
-        self._emit_event(
-            "executor",
-            "success" if success else "message",
-            f"工作流执行结束: success={success}, cancelled={cancelled}, "
-            f"successful_units={successful_units}, failed_units={len(errors)}",
+        active_runtime.log(
+            "executor", "success" if success else "message",
+            f"workflow done: success={success}, cancelled={cancelled}, "
+            f"successful={successful}, failed={len(errors)}",
         )
-        self._progress(
-            current=completed_units,
-            total=total_units,
-            unit=None,
-            status="cancelled" if cancelled else "done",
-        )
+        self._report_progress(completed, total, None,
+                              "cancelled" if cancelled else "done")
         return summary
 
-    def _prepare_steps(
-        self,
-        workflow_definition: WorkflowDefinition,
-    ) -> list[PreparedWorkflowStep]:
-        available_modules = self.module_manager.get_modules()
-        prepared_steps: list[PreparedWorkflowStep] = []
+    # ------------------------------------------------------------------
+    # Step / compat checks
+    # ------------------------------------------------------------------
 
-        for index, step in enumerate(workflow_definition.steps, start=1):
-            module_definition = available_modules.get(step.module)
-            if module_definition is None:
+    def _check_plan_compat(self, workflow: WorkflowDefinition, plan: InputPlan) -> None:
+        """Validate that the resolved input plan is compatible with workflow atom.
+
+        * atom="file"  accepts file or directory inputs; the recurse flag
+          controls whether dirs expand to file units or stay as folder units.
+        * atom="folder" accepts directory-only inputs; files are rejected.
+        * atom="line"  requires text-line inputs.
+        * atom="none"  requires no inputs.
+        """
+        if workflow.atom == "none":
+            if plan.atom != "none":
                 raise PipelineExecutionError(
-                    f"未找到工作流步骤所需模块: {step.module}"
+                    f"workflow atom='none' 不接受输入路径。"
                 )
-
-            workflow_mode = workflow_definition.mode
-            if workflow_mode not in module_definition.mode:
+            return
+        if workflow.atom == "line":
+            if plan.atom != "line":
                 raise PipelineExecutionError(
-                    f"步骤 {index} 的模块 '{step.module}' 不支持工作流模式 "
-                    f"'{workflow_mode}'（支持: {', '.join(module_definition.mode)}）"
+                    f"workflow atom='line' 不接受文件输入路径，请使用文本输入。"
                 )
+            return
+        # atom="file" or "folder": must have file/dir inputs
+        if plan.atom not in ("file", "folder"):
+            raise PipelineExecutionError(
+                f"workflow atom='{workflow.atom}' 需要文件/文件夹输入，当前输入类型为 '{plan.atom}'"
+            )
+        if workflow.atom == "folder":
+            for p in plan.files:
+                if not p.is_dir():
+                    raise PipelineExecutionError(
+                        f"workflow atom='folder' 仅接受文件夹输入，收到文件: {p}"
+                    )
 
+    def _prepare_steps(self, workflow: WorkflowDefinition) -> list[PreparedStep]:
+        modules = self.module_manager.get_modules()
+        prepared: list[PreparedStep] = []
+        for idx, step in enumerate(workflow.steps, start=1):
+            definition = modules.get(step.module)
+            if definition is None:
+                raise PipelineExecutionError(f"module not found: {step.module}")
+            if workflow.atom not in definition.atom:
+                raise PipelineExecutionError(
+                    f"step {idx} ('{step.module}') does not support atom "
+                    f"'{workflow.atom}' (supports: {', '.join(definition.atom)})"
+                )
+            if workflow.scope != definition.scope:
+                raise PipelineExecutionError(
+                    f"step {idx} ('{step.module}') does not support scope "
+                    f"'{workflow.scope}' (module requires: {definition.scope})"
+                )
             try:
-                params = normalize_config_params(
-                    module_definition.config_schema,
-                    step.params,
-                )
+                params = normalize_config_params(definition.config_schema, step.params)
             except ConfigValidationError as exc:
                 raise PipelineExecutionError(
-                    f"步骤 {index} ({step.module}) 参数校验失败: {'；'.join(exc.errors)}"
+                    f"step {idx} ({step.module}) param validation failed: {'; '.join(exc.errors)}"
                 ) from exc
             except ConfigSchemaValidationError as exc:
                 raise PipelineExecutionError(
-                    f"模块 {step.module} 的 CONFIG_SCHEMA 非法: {'；'.join(exc.errors)}"
+                    f"module {step.module} CONFIG_SCHEMA invalid: {'; '.join(exc.errors)}"
                 ) from exc
-
-            prepared_steps.append(
-                PreparedWorkflowStep(
-                    index=index,
-                    name=step.name or step.module,
-                    module_slug=step.module,
-                    module_definition=module_definition,
+            prepared.append(
+                PreparedStep(
+                    index=idx, name=step.name or step.module,
+                    module_slug=step.module, module_definition=definition,
                     params=params,
                 )
             )
-
-        return prepared_steps
+        return prepared
 
     # ------------------------------------------------------------------
-    # Unit building – delegates to dedicated handlers
+    # Unit construction
     # ------------------------------------------------------------------
 
-    @staticmethod
     def _build_units(
-        workflow_definition: WorkflowDefinition,
-        file_handler: FileHandler,
-        input_handler: InputHandler,
-        input_path: str | Path | None,
-        input_paths: list[str | Path] | None,
-        input_text: str | None = None,
+        self,
+        workflow: WorkflowDefinition,
+        plan: InputPlan,
+        copier: WorkingCopier,
+        shared: Mapping[str, Any] | None,
     ) -> list[dict[str, Any]]:
-        mode: PipelineMode = workflow_definition.mode
+        if workflow.scope == 0:
+            if plan.atom == "none":
+                return [{"path": None, "source_root": None}]
+            if plan.atom == "line":
+                return [{"line": "\n".join(plan.lines)}]
+            return [{"__shared_paths__": list(plan.files),
+                     "recurse": plan.recurse,
+                     "source_root": None}]
+        return units_from_plan(plan)
 
-        if mode == "none":
-            if input_path is not None or input_paths:
-                raise PipelineExecutionError("none 模式不接受输入路径。")
-            return [{"path": None, "source_root": None}]
-
-        if mode == "input":
-            if input_path is not None or input_paths:
-                raise PipelineExecutionError(
-                    "input 模式不接受文件输入路径，请使用文本输入。"
-                )
-            lines = InputInspector.validate_text_input(input_text or "")
-            return input_handler.build_units(lines) if lines else []
-
-        sources = PipelineExecutor._normalize_input_sources(
-            mode=mode,
-            input_path=input_path,
-            input_paths=input_paths,
-        )
-
-        if mode == "file":
-            return file_handler.build_file_units(sources)
-
-        if mode == "cycle":
-            return file_handler.build_cycle_units(sources)
-
-        if mode == "folder":
-            if len(sources) != 1:
-                raise PipelineExecutionError("folder 模式仅接受一个输入文件夹。")
-            source = sources[0]
-            if not source.is_dir():
-                raise PipelineExecutionError(
-                    "folder 模式要求输入路径为文件夹。"
-                )
-            return file_handler.build_folder_unit(source)
-
-        raise PipelineExecutionError(f"不支持的工作流模式: {mode}")
-
-    @staticmethod
-    def _normalize_input_sources(
-        *,
-        mode: PipelineMode,
-        input_path: str | Path | None,
-        input_paths: list[str | Path] | None,
-    ) -> list[Path]:
-        if input_path is not None and input_paths:
-            raise PipelineExecutionError("不能同时提供 input_path 和 input_paths。")
-
-        raw_sources: list[str | Path]
-        if input_paths is not None:
-            raw_sources = list(input_paths)
-        elif input_path is not None:
-            raw_sources = [input_path]
-        else:
-            raw_sources = []
-
-        if not raw_sources:
-            raise PipelineExecutionError(
-                f"{mode} 模式执行前必须提供输入路径。"
-            )
-
-        sources: list[Path] = []
-        for raw in raw_sources:
-            source = Path(raw)
-            if not source.exists():
-                raise PipelineExecutionError(f"输入路径不存在: {source}")
-            if not source.is_file() and not source.is_dir():
-                raise PipelineExecutionError(f"不支持的输入路径类型: {source}")
-            sources.append(source)
-        return sources
-
-    # ------------------------------------------------------------------
-    # Context preparation – delegates to handlers
-    # ------------------------------------------------------------------
-
-    @staticmethod
     def _prepare_context(
-        *,
-        file_handler: FileHandler,
-        input_handler: InputHandler,
-        mode: PipelineMode,
+        self,
+        workflow: WorkflowDefinition,
+        plan: InputPlan,
+        copier: WorkingCopier,
         unit: dict[str, Any],
-        shared: Mapping[str, Any] | None = None,
-        base_context: PipelineContext | None = None,
+        *,
+        shared: Mapping[str, Any] | None,
     ) -> PipelineContext:
-        if mode == "input":
-            return input_handler.prepare_context(
-                unit.get("line", ""),
-                file_handler.output_dir,
-                shared=dict(shared or {}),
+        if "__shared_paths__" in unit:
+            return copier.prepare_shared_path_unit(
+                list(unit["__shared_paths__"]),
+                recurse=unit.get("recurse", plan.recurse),
+                shared=shared,
             )
-        return file_handler.prepare_context(
-            unit,
-            mode=mode,
-            shared=dict(shared or {}),
-            base_context=base_context,
-        )
+        if plan.atom == "line" or unit.get("line") is not None:
+            return copier.prepare_line(unit, shared=shared)
+        if plan.atom == "none" or unit.get("path") is None:
+            return copier.prepare_none(shared=shared)
+        ctx_atom = workflow.atom
+        return copier.prepare_path_unit(unit, atom=ctx_atom, shared=shared)
 
     # ------------------------------------------------------------------
     # Unit execution
@@ -384,210 +315,138 @@ class PipelineExecutor:
     def _run_unit(
         self,
         *,
-        context: PipelineContext,
+        ctx: PipelineContext,
+        runtime: PipelineRuntime,
         unit_index: int,
         total_units: int,
-        prepared_steps: list[PreparedWorkflowStep],
+        steps: list[PreparedStep],
     ) -> PipelineContext:
-        self._raise_if_cancelled()
-        unit_name = _display_unit_name(context.original_input) or "<none>"
-        current_context = context
-        subscribed_buses: list[object] = []
+        self._raise_if_cancelled(runtime)
+        unit_name = _display_name(ctx.original_input) or "<none>"
+        current = ctx
 
-        try:
-            self._subscribe_live_events(current_context, subscribed_buses)
-            context.events.log(
-                "executor",
-                "message",
-                f"开始处理单元 [{unit_index}/{total_units}]: {unit_name}",
-            )
+        runtime.log("executor", "message",
+                    f"start unit [{unit_index}/{total_units}]: {unit_name}")
 
-            for step in prepared_steps:
-                self._raise_if_cancelled()
-                self._subscribe_live_events(current_context, subscribed_buses)
-                current_context.events.log(
-                    step.module_slug,
-                    "message",
-                    f"开始步骤 [{unit_index}/{total_units}] {step.index}/{len(prepared_steps)}: {step.name}",
-                )
+        for step in steps:
+            self._raise_if_cancelled(runtime)
+            runtime.log(step.module_slug, "message",
+                        f"start step [{unit_index}/{total_units}] "
+                        f"{step.index}/{len(steps)}: {step.name}")
 
-                try:
-                    result = step.module_definition.run(
-                        current_context, dict(step.params)
-                    )
-                except Exception as exc:
-                    current_context.events.log(
-                        step.module_slug,
-                        "error",
-                        f"步骤 {step.index} ({step.module_slug}) 执行失败: {exc}",
-                    )
-                    raise PipelineExecutionError(
-                        f"步骤 {step.index} ({step.module_slug}) 执行失败: {exc}"
-                    ) from exc
+            result = step.module_definition.run(current, dict(step.params), runtime)
+            current = self._resolve_step_result(step_name=step.name, result=result, fallback=current)
 
-                current_context = self._resolve_step_result(
-                    step_name=step.name,
-                    result=result,
-                    fallback=current_context,
-                )
-                self._subscribe_live_events(current_context, subscribed_buses)
-                current_context.events.log(
-                    step.module_slug,
-                    "success",
-                    f"完成步骤 [{unit_index}/{total_units}] {step.index}/{len(prepared_steps)}: {step.name}",
-                )
+            runtime.log(step.module_slug, "success",
+                        f"done step [{unit_index}/{total_units}] "
+                        f"{step.index}/{len(steps)}: {step.name}")
 
-            current_context.events.log(
-                "executor",
-                "success",
-                f"处理单元成功 [{unit_index}/{total_units}]: {unit_name}",
-            )
-            return current_context
-        finally:
-            if self.event_callback is not None:
-                for bus in subscribed_buses:
-                    bus.unsubscribe(self.event_callback)
+        runtime.log("executor", "success",
+                    f"unit ok [{unit_index}/{total_units}]: {unit_name}")
+        return current
 
-    def _resolve_step_result(
-        self,
-        *,
-        step_name: str,
-        result: Any,
-        fallback: PipelineContext,
-    ) -> PipelineContext:
+    def _resolve_step_result(self, *, step_name: str, result: Any, fallback: PipelineContext) -> PipelineContext:
         if result is None:
             return fallback
         if isinstance(result, PipelineContext):
             return result
-        if isinstance(result, Mapping) and isinstance(
-            result.get("context"), PipelineContext
-        ):
+        if isinstance(result, Mapping) and isinstance(result.get("context"), PipelineContext):
             return result["context"]
         raise PipelineExecutionError(
-            f"步骤 {step_name} 返回值非法，必须返回 PipelineContext、None 或包含 context 的字典。"
+            f"step {step_name} returned invalid value: must be PipelineContext, None, or dict with context key"
         )
 
-    def _emit_event(
-        self, slug: str, event_type: str, text: str, data: dict[str, Any] | None = None
-    ) -> None:
-        if self.event_callback is not None:
-            self.event_callback(
-                PipelineEvent(slug=slug, type=event_type, text=text, data=data or {})
-            )
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
-    def _progress(
-        self,
-        *,
-        current: int,
-        total: int,
-        unit: Path | None,
-        status: str,
-    ) -> None:
+    def _report_progress(self, current: int, total: int, unit: str | None, status: str) -> None:
         if self.progress_callback is None:
             return
         percent = 100 if total == 0 else int(current * 100 / total)
-        self.progress_callback(
-            {
-                "current": current,
-                "total": total,
-                "percent": percent,
-                "unit": _display_unit_name(unit),
-                "status": status,
-            }
-        )
+        self.progress_callback({
+            "current": current, "total": total,
+            "percent": percent, "unit": unit, "status": status,
+        })
 
-    def _subscribe_live_events(
-        self,
-        context: PipelineContext,
-        subscribed_buses: list[object],
-    ) -> None:
-        if self.event_callback is None:
-            return
-        bus = context.events
-        if bus in subscribed_buses:
-            return
-        bus.subscribe(self.event_callback)
-        subscribed_buses.append(bus)
-
-    def _raise_if_cancelled(self) -> None:
+    def _raise_if_cancelled(self, runtime: PipelineRuntime) -> None:
         if self.cancel_requested is not None and self.cancel_requested():
-            raise PipelineCancelledError("执行已取消，停止后续处理。")
+            raise PipelineCancelledError("execution cancelled.")
+        if runtime.is_cancelled():
+            raise PipelineCancelledError("execution cancelled.")
 
 
 def execute_workflow(
     workflow: WorkflowDefinition | Mapping[str, Any] | str | Path,
     *,
     output_dir: str | Path,
-    input_path: str | Path | None = None,
-    input_paths: list[str | Path] | None = None,
-    input_text: str | None = None,
+    files: list[str | Path] | None = None,
+    recurse: bool = False,
+    lines_text: str | None = None,
+    lines_file: str | Path | None = None,
     direct_mode: bool = False,
     modules_dir: str | Path = "modules",
-    event_callback: EventCallback | None = None,
+    log_file: str | Path | None = None,
     progress_callback: ProgressCallback | None = None,
     cancel_requested: CancelCallback | None = None,
+    event_listener: EventCallback | None = None,
     shared: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Pure helper for running workflows without importing GUI code."""
+    """Standalone runner for CLI callers and tests.
 
+    Builds a fresh ``ModuleManager`` and ``PipelineRuntime`` each call.
+    No GUI imports; safe under multiprocessing.
+    """
+
+    runtime = PipelineRuntime(log_file=log_file)
     module_manager = ModuleManager(modules_dir)
     executor = PipelineExecutor(
         module_manager,
-        event_callback=event_callback,
+        runtime=runtime,
         progress_callback=progress_callback,
         cancel_requested=cancel_requested,
+        event_listener=event_listener,
     )
-    return executor.execute(
-        workflow,
-        output_dir=output_dir,
-        input_path=input_path,
-        input_paths=input_paths,
-        input_text=input_text,
-        direct_mode=direct_mode,
-        shared=shared,
-    )
+    try:
+        return executor.execute(
+            workflow,
+            output_dir=output_dir,
+            files=files, recurse=recurse,
+            lines_text=lines_text, lines_file=lines_file,
+            direct_mode=direct_mode, shared=shared,
+        )
+    finally:
+        runtime.close()
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _resolve_workflow_definition(
     workflow: WorkflowDefinition | Mapping[str, Any] | str | Path,
 ) -> WorkflowDefinition:
     if isinstance(workflow, WorkflowDefinition):
         return workflow
-
     loader = WorkflowLoader(Path.cwd() / "workflows")
-
     if isinstance(workflow, Mapping):
-        return _validate_and_unwrap(loader.validate_document(workflow))
-
-    workflow_path = Path(workflow)
-    if workflow_path.is_absolute():
-        loader = WorkflowLoader(workflow_path.parent)
-        return _validate_and_unwrap(
-            loader.validate_document(_read_yaml(workflow_path), source_path=workflow_path)
-        )
-
-    return loader.load(workflow_path)
-
-
-def _validate_and_unwrap(result: Any) -> WorkflowDefinition:  # WorkflowValidationResult
-    if not result.is_valid or result.workflow is None:
-        raise WorkflowValidationError(list(result.errors))
-    return result.workflow
+        result = loader.validate_document(workflow)
+        if not result.is_valid or result.workflow is None:
+            raise WorkflowValidationError(list(result.errors))
+        return result.workflow
+    path = Path(workflow)
+    if path.is_absolute():
+        loader = WorkflowLoader(path.parent)
+        return loader.load(path)
+    return loader.load(path)
 
 
-def _read_yaml(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
-        return yaml.safe_load(handle) or {}
-
-
-def _display_unit_name(path: Path | str | None) -> str | None:
-    if path is None:
-        return None
-    return str(path)
+def _display_name(path: Path | str | None) -> str | None:
+    return None if path is None else str(path)
 
 
 def _unit_display(unit: dict[str, Any]) -> str | None:
     line = unit.get("line")
     if line is not None:
-        return f"[input] {line}"
-    return _display_unit_name(unit.get("path"))
+        return f"[line] {line}"
+    return _display_name(unit.get("path"))

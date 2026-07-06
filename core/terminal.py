@@ -1,51 +1,39 @@
-"""Pseudo-terminal session wrapper for interactive subprocess management.
+"""Terminal sessions: cross-platform PTY spawner with stream dispatch.
 
-Provides a synchronous, blocking interface that modules call from within
-``run()``.  Output is streamed to the PipelineEventBus so the GUI layer
-can detect and display it in real time.
+Platform routing:
+
+* win32 — prefer ``pywinpty.PtyProcess`` (optional dependency)
+* posix — use ``pty.fork()`` from stdlib
+* fallback — ``subprocess.Popen`` plus ``communicate``; no interactive stdin
+
+All platforms forward output to the runtime's EventBus as
+``terminal:*`` events, so callers see one uniform contract.  The GUI layer
+attaches its own listener to the bus, CLI layers just see them in the JSONL
+sink — both receive the same ``terminal:output`` payload.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
+import logging
 import os
 import re
+import sys
 import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-from .pipeline import PipelineEventBus  # noqa: TCH001  -- used in forward refs
+if TYPE_CHECKING:
+    from .runtime import PipelineRuntime
+
+LOGGER = logging.getLogger(__name__)
 
 _ANSI_STRIP_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b[@-_]")
 
 
-# ---------------------------------------------------------------------------
-# Module-level session registry so GUI can locate an active session by id.
-# ---------------------------------------------------------------------------
-_sessions: dict[str, "TerminalSession"] = {}
-
-
-def _register(session: "TerminalSession") -> None:
-    _sessions[session.id] = session
-
-
-def _unregister(session: "TerminalSession") -> None:
-    _sessions.pop(session.id, None)
-
-
-def get_session(session_id: str) -> "TerminalSession | None":
-    """Retrieve an active terminal session by its id (called from GUI)."""
-    return _sessions.get(session_id)
-
-
-# ---------------------------------------------------------------------------
-# Result type
-# ---------------------------------------------------------------------------
-
-
 @dataclass(slots=True, frozen=True)
 class TerminalResult:
-    """Outcome of a terminal command execution."""
+    """Outcome of an external command execution."""
 
     exit_code: int
 
@@ -54,143 +42,293 @@ class TerminalResult:
         return self.exit_code == 0
 
 
-# ---------------------------------------------------------------------------
-# Session
-# ---------------------------------------------------------------------------
+class TerminalSessionRegistry:
+    """Process-level registry of live terminal sessions, scoped per runtime.
+
+    The legacy implementation kept a module-level ``_sessions`` dict which
+    broke under mulitprocess spawning.  Moving it onto the runtime keeps one
+    process's registrations private to its runtime instance — the foundation
+    for a future ``multiprocessing.Pool`` transport.
+    """
+
+    def __init__(self) -> None:
+        self._sessions: dict[str, "TerminalSession"] = {}
+
+    def register(self, session: "TerminalSession") -> None:
+        self._sessions[session.id] = session
+
+    def unregister(self, session: "TerminalSession") -> None:
+        self._sessions.pop(session.id, None)
+
+    def get(self, session_id: str) -> "TerminalSession | None":
+        return self._sessions.get(session_id)
+
+    def close_all(self) -> None:
+        """Terminate every outstanding session (runtime shutdown)."""
+
+        for session in list(self._sessions.values()):
+            try:
+                session.terminate()
+            except Exception:  # pragma: no cover
+                pass
+        self._sessions.clear()
+
+    def __len__(self) -> int:
+        return len(self._sessions)
 
 
 class TerminalSession:
-    """Spawn a command inside a pseudo-terminal and stream output to the
-    pipeline event bus.
-
-    Usage from a module's ``run()``::
-
-        result = TerminalSession(cmd, event_bus=context.events).run()
-        if not result.is_success:
-            raise RuntimeError(...)
-    """
+    """Spawn ``cmd`` inside a PTY (where supported) and stream output."""
 
     def __init__(
         self,
-        command: list[str],
+        cmd: list[str],
         *,
+        runtime: "PipelineRuntime",
         cwd: str | Path | None = None,
         env: dict[str, str] | None = None,
-        event_bus: PipelineEventBus,
         exit_pattern: str | None = None,
         exit_action: str = "write_newline",
     ) -> None:
+        if not cmd:
+            raise ValueError("TerminalSession requires a non-empty command list.")
         self.id: str = uuid.uuid4().hex
-        self.command = list(command)
+        self.cmd: list[str] = list(cmd)
         self.cwd = Path(cwd) if cwd else None
-        default_env = dict(os.environ)
-        default_env.setdefault("PYTHONIOENCODING", "utf-8")
-        default_env.setdefault("PYTHONUTF8", "1")
-        if env:
-            default_env.update(env)
-        self.env = default_env
-        self._event_bus = event_bus
-        self._process: Any = None
-        self._exit_code: int | None = None
+        defaults_env = dict(os.environ)
+        defaults_env.setdefault("PYTHONIOENCODING", "utf-8")
+        defaults_env.setdefault("PYTHONUTF8", "1")
+        # Normalize/extend with caller overrides.
+        _custom_env = env or {}
+        defaults_env.update({k: str(v) for k, v in _custom_env.items()})
+        self.env: dict[str, str] = defaults_env
+        self._runtime = runtime
         self._exit_pattern = exit_pattern
         self._exit_action = exit_action
-        self._output_buf = ""
+        self._exit_code: int | None = None
+        self._process: Any = None
+        self._buf = ""
         self._pattern_matched = False
 
+        # Winpty handle / subprocess handle live on the chosen backend.
+        self._backend: str = "auto"
+        self._child_stream: Any = None  # subprocess.Popen fallback pipe
+
+    @property
+    def exit_code(self) -> int | None:
+        return self._exit_code
+
     def run(self) -> TerminalResult:
-        """Spawn the command, stream output, and block until completion.
-
-        If *exit_pattern* was supplied, once the accumulated output contains it
-        the session will emit ``terminal:close`` (so the GUI can auto-dismiss
-        the terminal window) and perform *exit_action* (``"write_newline"`` to
-        send Enter to stdin or ``"terminate"`` to kill the process).
-        """
-        from winpty import PtyProcess  # lazy import so core stays importable
-
-        _register(self)
-
-        self._event_bus.log(
-            "terminal",
-            "message",
-            "terminal:started",
-            {"session_id": self.id, "command": " ".join(self.command)},
-        )
+        """Run the command and block until termination is detected."""
 
         try:
+            if sys.platform == "win32":
+                return self._run_winpty()
+            elif sys.platform.startswith(("linux", "darwin", "freebsd")):
+                return self._run_posix_pty()
+            return self._run_subprocess_fallback()
+        finally:
+            self._emit_finished(self._exit_code if self._exit_code is not None else -1)
+
+    # ------------------------------------------------------------------
+    # Winpty backend
+    # ------------------------------------------------------------------
+
+    def _run_winpty(self) -> TerminalResult:
+        try:
+            from winpty import PtyProcess
+        except ImportError:
+            return self._run_subprocess_fallback(print_warning=True)
+
+        self._backend = "winpty"
+        self._emit_started()
+        try:
             self._process = PtyProcess.spawn(
-                self.command,
+                self.cmd,
                 cwd=str(self.cwd) if self.cwd else None,
                 env=self.env,
             )
             while self._process.isalive():
                 try:
                     raw = self._process.read(4096)
-                    if raw:
-                        data = _ANSI_STRIP_RE.sub("", raw)
-                        if data:
-                            self._event_bus.log(
-                                "terminal",
-                                "message",
-                                "terminal:output",
-                                {"session_id": self.id, "text": data},
-                            )
-                            self._check_exit_pattern(data)
                 except (OSError, EOFError):
                     break
+                if raw:
+                    self._consume_and_emit(raw)
             self._exit_code = self._process.wait()
-        finally:
-            self._process = None
-            self._event_bus.log(
-                "terminal",
-                "message",
-                "terminal:finished",
-                {
-                    "session_id": self.id,
-                    "exit_code": self._exit_code if self._exit_code is not None else -1,
-                },
-            )
-            _unregister(self)
-
+        except OSError as exc:
+            LOGGER.exception("winpty spawn failed: %s", exc)
+            self._exit_code = -127
+            raise
         return TerminalResult(exit_code=self._exit_code if self._exit_code is not None else -1)
 
-    def _check_exit_pattern(self, data: str) -> None:
-        """If *exit_pattern* is set and found in the accumulated output,
-        emit ``terminal:close`` and perform *exit_action*."""
-        if self._exit_pattern is None or self._pattern_matched:
-            return
-        self._output_buf += data
-        if self._exit_pattern in self._output_buf:
-            self._pattern_matched = True
-            self._event_bus.log(
-                "terminal",
-                "message",
-                "terminal:close",
-                {"session_id": self.id},
-            )
-            if self._exit_action == "write_newline" and self._process is not None:
-                try:
-                    self._process.write("\n")
-                except OSError:
-                    pass
-            elif self._exit_action == "terminate" and self._process is not None:
-                try:
-                    self._process.terminate()
-                except OSError:
-                    pass
+    # ------------------------------------------------------------------
+    # Posix pty backend
+    # ------------------------------------------------------------------
 
-    def write(self, data: str) -> None:
-        """Write *data* to the process stdin (called from the GUI)."""
-        if self._process is not None:
-            self._process.write(data)
+    def _run_posix_pty(self) -> TerminalResult:
+        import pty
+        try:
+            pid, fd = pty.fork()
+        except OSError as exc:  # pragma: no cover
+            LOGGER.warning("pty.fork failed, falling back to subprocess: %s", exc)
+            return self._run_subprocess_fallback(print_warning=True)
 
-    def terminate(self) -> None:
-        """Terminate the underlying process."""
-        if self._process is not None:
+        if pid == 0:
+            # Child process
             try:
-                self._process.terminate()
+                if self.cwd:
+                    os.chdir(self.cwd)
+                for k, v in self.env.items():
+                    os.environ[k] = v
+                os.execvp(self.cmd[0], self.cmd)
+            except OSError:  # pragma: no cover
+                os._exit(127)
+        # Parent process
+        self._backend = "posix-pty"
+        self._emit_started()
+        self._child_stream = fd
+        try:
+            while True:
+                try:
+                    data = os.read(fd, 4096)
+                except OSError:
+                    break
+                if not data:
+                    break
+                self._consume_and_emit(data.decode("utf-8", errors="replace"))
+            _, status = os.waitpid(pid, 0)
+            if os.WIFEXITED(status):
+                self._exit_code = os.WEXITSTATUS(status)
+            elif os.WIFSIGNALED(status):
+                self._exit_code = -1
+            else:
+                self._exit_code = -1
+        finally:
+            try:
+                os.close(fd)
             except OSError:
                 pass
+        return TerminalResult(exit_code=self._exit_code if self._exit_code is not None else -1)
 
-    @property
-    def exit_code(self) -> int | None:
-        return self._exit_code
+    # ------------------------------------------------------------------
+    # Subprocess fallback (e.g. headless / no winpty installed)
+    # ------------------------------------------------------------------
+
+    def _run_subprocess_fallback(self, *, print_warning: bool = False) -> TerminalResult:
+        import subprocess
+
+        if print_warning:
+            self._runtime.log(
+                "terminal", "warning",
+                "原生 PTY 不可用，回退到子进程模式（无交互 stdin）。",
+                {"session_id": self.id, "command": " ".join(self.cmd)},
+            )
+        self._backend = "subprocess"
+        self._emit_started()
+        try:
+            proc = subprocess.Popen(
+                self.cmd,
+                cwd=str(self.cwd) if self.cwd else None,
+                env=self.env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                bufsize=1,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            self._process = proc
+            if proc.stdout is not None:
+                for line in proc.stdout:
+                    self._consume_and_emit(line)
+            self._exit_code = proc.wait()
+        except OSError as exc:
+            LOGGER.exception("subprocess fallback failed: %s", exc)
+            self._exit_code = -127
+            raise
+        return TerminalResult(exit_code=self._exit_code if self._exit_code is not None else -1)
+
+    # ------------------------------------------------------------------
+    # Streaming helpers
+    # ------------------------------------------------------------------
+
+    def _consume_and_emit(self, raw: str) -> None:
+        clean = _ANSI_STRIP_RE.sub("", raw)
+        if not clean:
+            return
+        self._runtime.log(
+            "terminal", "message", "terminal:output",
+            {"session_id": self.id, "text": clean},
+        )
+        self._check_exit_pattern(clean)
+
+    def _check_exit_pattern(self, data: str) -> None:
+        if self._exit_pattern is None or self._pattern_matched:
+            return
+        self._buf += data
+        if self._exit_pattern in self._buf:
+            self._pattern_matched = True
+            self._runtime.log(
+                "terminal", "message", "terminal:close",
+                {"session_id": self.id},
+            )
+            if self._exit_action == "write_newline":
+                self.write("\n")
+            elif self._exit_action == "terminate":
+                self.terminate()
+
+    def _emit_started(self) -> None:
+        self._runtime.log(
+            "terminal", "message", "terminal:started",
+            {"session_id": self.id, "command": " ".join(self.cmd), "backend": self._backend},
+        )
+
+    def _emit_finished(self, exit_code: int) -> None:
+        self._runtime.log(
+            "terminal", "message", "terminal:finished",
+            {"session_id": self.id, "exit_code": exit_code},
+        )
+
+    def write(self, data: str) -> None:
+        """Write data to the child stdin (GUI interactive path)."""
+
+        proc = self._process
+        if proc is None:
+            return
+        if self._backend == "winpty":
+            try:
+                proc.write(data)
+            except OSError:
+                pass
+        elif self._backend == "posix-pty":
+            # Not implemented interactively for posix in this pass — winpty + GUI is the primary use case.
+            return
+        elif self._backend == "subprocess":
+            stdin = getattr(proc, "stdin", None)
+            if stdin is not None:
+                try:
+                    stdin.write(data)
+                    stdin.flush()
+                except OSError:
+                    pass
+
+    def terminate(self) -> None:
+        """Terminate the underlying process (idempotent)."""
+
+        proc = self._process
+        if proc is None:
+            return
+        try:
+            if self._backend == "winpty":
+                proc.terminate(force=True)
+            elif self._backend == "subprocess":
+                proc.terminate()
+        except OSError:
+            pass
+
+
+def get_session(runtime: "PipelineRuntime", session_id: str) -> TerminalSession | None:
+    """Convenience accessor used by GUI layers to find an interactive terminal."""
+
+    return runtime.sessions.get(session_id)

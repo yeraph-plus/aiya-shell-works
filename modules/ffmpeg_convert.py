@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 
 MODULE_META = {
     "slug": "ffmpeg-convert",
     "name": "FFmpeg 转码",
-    "core_version": "1.0.0",
+    "core_version": "2.0.0",
     "tags": ["ffmpeg", "convert", "video", "audio"],
-    "mode": ["file", "folder"],
+    "atom": ["file", "folder"],
     "description": "使用 FFmpeg 转换媒体文件格式、调整编码参数、分辨率、帧率与像素格式，支持硬件加速编码。",
 }
 
@@ -198,8 +199,8 @@ _SUPPORTED_EXTENSIONS = frozenset({
 })
 
 
-def _resolve_ffmpeg_path(config: dict) -> str | None:
-    custom = config.get("ffmpeg_path", "").strip()
+def _resolve_ffmpeg_path(cfg: dict) -> str | None:
+    custom = cfg.get("ffmpeg_path", "").strip()
     if custom:
         p = Path(custom)
         if p.exists():
@@ -214,9 +215,9 @@ def _resolve_ffmpeg_path(config: dict) -> str | None:
     return None
 
 
-def _collect_targets(context) -> list[Path]:
-    wp = Path(context.working_path)
-    if context.mode == "file":
+def _collect_targets(ctx: "Any") -> list[Path]:
+    wp = Path(ctx.working_path)
+    if ctx.atom == "file":
         return [wp] if wp.is_file() and wp.suffix.lower() in _SUPPORTED_EXTENSIONS else []
     if wp.is_dir():
         return sorted(
@@ -243,17 +244,17 @@ def _output_path(input_file: Path, output_dir: Path, output_format: str) -> Path
 def _build_command(
     input_file: Path,
     output_file: Path,
-    config: dict,
+    cfg: dict,
 ) -> list[str]:
     cmd: list[str] = []
 
-    if config.get("overwrite", True):
+    if cfg.get("overwrite", True):
         cmd.append("-y")
 
     cmd.extend(["-i", str(input_file)])
 
-    video_codec = config.get("video_codec", "h264")
-    hw_accel = config.get("hw_accel", "none")
+    video_codec = cfg.get("video_codec", "h264")
+    hw_accel = cfg.get("hw_accel", "none")
 
     if video_codec == "none":
         cmd.append("-vn")
@@ -262,38 +263,38 @@ def _build_command(
     else:
         if hw_accel != "none" and (hw_encoder := _HW_ENCODER_MAP.get(video_codec, {}).get(hw_accel)):
             cmd.extend(["-c:v", hw_encoder])
-            quality = config.get("quality", 28)
+            quality = cfg.get("quality", 28)
             cmd.extend(["-qp", str(quality)])
         else:
             software_encoder = _SOFTWARE_CODECS.get(video_codec, video_codec)
             cmd.extend(["-c:v", software_encoder])
-            quality = config.get("quality", 28)
+            quality = cfg.get("quality", 28)
             cmd.extend(["-crf", str(quality)])
-            preset = config.get("preset", "medium")
+            preset = cfg.get("preset", "medium")
             cmd.extend(["-preset", preset])
 
-    audio_codec = config.get("audio_codec", "aac")
+    audio_codec = cfg.get("audio_codec", "aac")
     if audio_codec == "none":
         cmd.append("-an")
     elif audio_codec == "copy":
         cmd.extend(["-c:a", "copy"])
     else:
         cmd.extend(["-c:a", audio_codec])
-        ab = config.get("audio_bitrate", "").strip()
+        ab = cfg.get("audio_bitrate", "").strip()
         if ab:
             cmd.extend(["-b:a", ab])
 
-    resolution = config.get("resolution", "original")
+    resolution = cfg.get("resolution", "original")
     if resolution != "original":
         scale_filter = _RESOLUTION_SCALE.get(resolution)
         if scale_filter:
             cmd.extend(["-vf", scale_filter])
 
-    fps = config.get("fps", "").strip()
+    fps = cfg.get("fps", "").strip()
     if fps:
         cmd.extend(["-r", fps])
 
-    pix_fmt = config.get("pix_fmt", "yuv420p")
+    pix_fmt = cfg.get("pix_fmt", "yuv420p")
     if pix_fmt != "original":
         cmd.extend(["-pix_fmt", pix_fmt])
 
@@ -301,79 +302,70 @@ def _build_command(
     return cmd
 
 
-def run(context, config):
-    targets = _collect_targets(context)
+def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+    targets = _collect_targets(ctx)
     if not targets:
-        context.events.log("ffmpeg-convert", "message", "未发现支持的媒体文件，跳过。")
-        return context
+        runtime.log("ffmpeg-convert", "message", "未发现支持的媒体文件，跳过。")
+        return ctx
 
-    ffmpeg = _resolve_ffmpeg_path(config)
+    ffmpeg = _resolve_ffmpeg_path(cfg)
     if ffmpeg is None:
-        context.events.log(
+        runtime.log(
             "ffmpeg-convert", "error",
             "FFmpeg 未找到，请配置路径或将 ffmpeg.exe 放置到 resources/ffmpeg/ 下，或在工作流配置中指定 ffmpeg.exe 位置。",
         )
-        return context
+        return ctx
 
-    output_format = config.get("output_format", "mp4")
-    output_dir = Path(context.output_dir)
+    output_format = cfg.get("output_format", "mp4")
+    output_dir = Path(ctx.output_dir)
     succeeded = 0
     failed = 0
 
     for target in targets:
         output_file = _output_path(target, output_dir, output_format)
-        cmd = _build_command(target, output_file, config)
+        cmd = _build_command(target, output_file, cfg)
 
-        context.events.log(
+        runtime.log(
             "ffmpeg-convert", "hint",
             f"FFmpeg 命令行: {' '.join(cmd)}",
         )
-        context.events.log(
+        runtime.log(
             "ffmpeg-convert", "message",
             f"开始转码: {target.name} → {output_file.name}",
         )
 
         try:
-            import winpty  # noqa: F401
-        except ImportError:
-            context.events.log(
-                "ffmpeg-convert", "error",
-                "pywinpty 未安装，无法使用终端，请运行 pip install pywinpty。",
-            )
-            return context
-
-        try:
-            result = context.run_command(cmd)
+            result = runtime.spawn(cmd)
         except OSError as e:
-            context.events.log("ffmpeg-convert", "error", f"FFmpeg 启动失败: {e}")
+            runtime.log("ffmpeg-convert", "error", f"FFmpeg 启动失败: {e}")
             failed += 1
             continue
 
         if result.is_success:
-            context.track_extra_file(output_file)
+            ctx.track_extra_file(output_file)
             succeeded += 1
-            context.events.log(
+            runtime.log(
                 "ffmpeg-convert", "success",
                 f"转码完成: {output_file.name}",
                 {"output_file": str(output_file)},
             )
         else:
             failed += 1
-            context.events.log(
+            runtime.log(
                 "ffmpeg-convert", "error",
                 f"FFmpeg 返回非零退出码: {result.exit_code} — {target.name}",
             )
 
-    context.events.log(
+    runtime.log(
         "ffmpeg-convert", "message",
         f"转码批次完成: {succeeded} 成功, {failed} 失败 (共 {len(targets)} 个文件)。",
         {"succeeded": succeeded, "failed": failed, "total": len(targets)},
     )
 
     if failed > 0 and succeeded == 0:
-        context.events.log(
+        runtime.log(
             "ffmpeg-convert", "error",
             "所有文件转码均失败。",
         )
 
-    return context
+    return ctx

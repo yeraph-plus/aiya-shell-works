@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 
 MODULE_META = {
     "slug": "exiftool-clean",
     "name": "清除EXIF元数据",
-    "core_version": "1.0.0",
+    "core_version": "2.0.0",
     "tags": ["exif", "metadata", "privacy"],
-    "mode": ["file", "folder"],
+    "atom": ["file", "folder"],
     "description": "使用 ExifTool 清除图片/视频/PDF 文件的元数据。",
 }
 
@@ -57,8 +58,8 @@ _SUPPORTED_EXTENSIONS = frozenset({
 })
 
 
-def _resolve_exiftool_path(config: dict) -> str | None:
-    custom = config.get("exiftool_path", "").strip()
+def _resolve_exiftool_path(cfg: dict) -> str | None:
+    custom = cfg.get("exiftool_path", "").strip()
     if custom:
         p = Path(custom)
         if p.exists():
@@ -82,79 +83,73 @@ def _resolve_exiftool_path(config: dict) -> str | None:
     return None
 
 
-def _collect_targets(context, config) -> list[Path]:
-    wp = Path(context.working_path)
-    if context.mode == "file":
+def _collect_targets(ctx: "Any", cfg: dict) -> list[Path]:
+    wp = Path(ctx.working_path)
+    if ctx.atom == "file":
         return [wp] if wp.is_file() and wp.suffix.lower() in _SUPPORTED_EXTENSIONS else []
     if wp.is_dir():
-        if config.get("recursive", False):
+        if cfg.get("recursive", False):
             return [wp]
         return [f for f in wp.iterdir() if f.is_file() and f.suffix.lower() in _SUPPORTED_EXTENSIONS]
     return []
 
 
-def run(context, config):
-    targets = _collect_targets(context, config)
+def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+    targets = _collect_targets(ctx, cfg)
     if not targets:
-        context.events.log("exiftool-clean", "message", "未发现支持格式的文件，跳过。")
-        return context
+        runtime.log("exiftool-clean", "message", "未发现支持格式的文件，跳过。")
+        return ctx
 
-    exiftool = _resolve_exiftool_path(config)
+    exiftool = _resolve_exiftool_path(cfg)
     if exiftool is None:
-        context.events.log(
+        runtime.log(
             "exiftool-clean", "error",
             "ExifTool 未找到，请配置路径或将 exiftool(-k).exe 放置到 resources/exiftool/ 下，或在工作流配置中指定 exiftool(-k).exe 位置。",
         )
-        return context
+        return ctx
 
     cmd = [exiftool, "-all=", "-overwrite_original"]
 
-    charset = config.get("charset_filename", "").strip()
+    charset = cfg.get("charset_filename", "").strip()
     if charset:
         cmd.extend(["-charset", f"filename={charset}"])
 
-    if config.get("keep_orientation", False):
+    if cfg.get("keep_orientation", False):
         cmd.extend(["-tagsfromfile", "@", "-Orientation"])
-    if config.get("keep_datetime", False):
+    if cfg.get("keep_datetime", False):
         cmd.extend(["-tagsfromfile", "@", "-DateTimeOriginal", "-CreateDate", "-ModifyDate"])
 
-    if config.get("recursive", False) and context.mode == "folder":
+    if cfg.get("recursive", False) and ctx.atom == "folder":
         cmd.append("-r")
-        cmd.append(str(context.working_path))
+        cmd.append(str(ctx.working_path))
     else:
         cmd.extend(str(f) for f in targets)
 
-    context.events.log(
+    runtime.log(
         "exiftool-clean", "hint",
         f"ExifTool 命令行: {' '.join(cmd)}",
     )
-    context.events.log(
+    runtime.log(
         "exiftool-clean", "message",
         f"开始清除 {len(targets)} 个文件的元数据 (ExifTool: {exiftool})...",
     )
 
     try:
-        import winpty  # noqa: F401  -- ensure PTY support is available
-    except ImportError:
-        context.events.log("exiftool-clean", "error", "pywinpty 未安装，无法使用终端，请运行 pip install pywinpty。")
-        return context
-
-    try:
-        result = context.run_command(cmd, exit_pattern="-- press ENTER --")
+        result = runtime.spawn(cmd, exit_pattern="-- press ENTER --")
     except OSError as e:
-        context.events.log("exiftool-clean", "error", f"ExifTool 启动失败: {e}")
-        return context
+        runtime.log("exiftool-clean", "error", f"ExifTool 启动失败: {e}")
+        return ctx
 
     if result.is_success:
-        context.events.log(
+        runtime.log(
             "exiftool-clean", "success",
             f"元数据清除完成: {len(targets)} 个文件。",
             {"file_count": len(targets)},
         )
     else:
-        context.events.log(
+        runtime.log(
             "exiftool-clean", "error",
             f"ExifTool 返回非零退出码: {result.exit_code}",
         )
 
-    return context
+    return ctx

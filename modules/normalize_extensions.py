@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 
 MODULE_META = {
     "slug": "normalize-extensions",
     "name": "标准化文件后缀",
-    "core_version": "1.0.0",
+    "core_version": "2.0.0",
     "tags": ["normalize", "extension"],
-    "mode": ["file", "folder"],
+    "atom": ["file", "folder"],
     "description": "统一文件扩展名为小写标准后缀，如 jpeg→jpg、JPG→jpg、tiff→tif。",
 }
 
@@ -54,22 +55,22 @@ def _make_unique(target: Path) -> Path:
         counter += 1
 
 
-def _collect_targets(context) -> list[Path]:
-    wp = Path(context.working_path)
-    if context.mode == "file":
+def _collect_targets(ctx: "Any") -> list[Path]:
+    wp = Path(ctx.working_path)
+    if ctx.atom == "file":
         return [wp] if wp.is_file() else []
     if wp.is_dir():
         return [f for f in wp.iterdir() if f.is_file()]
     return []
 
 
-def run(context, config):
-    lowercase = config.get("lowercase", True)
+def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+    lowercase = cfg.get("lowercase", True)
 
-    targets = _collect_targets(context)
+    targets = _collect_targets(ctx)
     if not targets:
-        context.events.log("normalize-extensions", "hint", "无可操作的文件。")
-        return context
+        runtime.log("normalize-extensions", "hint", "无可操作的文件。")
+        return ctx
 
     renamed = 0
     updated_working_path = None
@@ -84,26 +85,26 @@ def run(context, config):
         try:
             f.rename(new_path)
             renamed += 1
-            context.events.log(
+            runtime.log(
                 "normalize-extensions", "success",
                 f"已标准化: {f.name} → {new_path.name}",
             )
-            if context.mode == "file":
+            if ctx.atom == "file":
                 updated_working_path = new_path
         except OSError as e:
-            context.events.log(
+            runtime.log(
                 "normalize-extensions", "error",
                 f"重命名失败: {f.name} ({e})",
             )
 
     if renamed > 0:
-        context.events.log(
+        runtime.log(
             "normalize-extensions", "message",
             f"后缀标准化完成: {renamed} 个文件。",
         )
     else:
-        context.events.log("normalize-extensions", "message", "所有文件后缀已为标准格式。")
+        runtime.log("normalize-extensions", "message", "所有文件后缀已为标准格式。")
 
     if updated_working_path is not None:
-        return context.clone(working_path=updated_working_path)
-    return context
+        return ctx.clone(working_path=updated_working_path)
+    return ctx

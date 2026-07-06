@@ -1,0 +1,12 @@
+meta:
+  name: Cycle Count
+  description: atom=file + scope=shared — every input file is merged into one working tree, then counted.
+  version: "1.0.0"
+atom: file
+scope: 0
+recurse: true
+steps:
+  - module: cycle-counter
+    name: Count files
+    params:
+      report_filename: "count.txt"

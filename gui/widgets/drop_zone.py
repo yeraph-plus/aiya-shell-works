@@ -52,7 +52,6 @@ class DropZoneWidget(QWidget):
         )
 
     def set_drop_enabled(self, enabled: bool) -> None:
-        """Toggle drop support and update helper text."""
         self.setEnabled(enabled)
         self._hint_label.setText(self._enabled_hint if enabled else self._disabled_hint)
 

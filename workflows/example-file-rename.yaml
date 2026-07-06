@@ -1,16 +1,18 @@
 meta:
-  name: File Rename Example
-  description: Rename file copies and generate a summary.
+  name: File Rename
+  description: atom=file + recurse=true + per-unit — rename every file copy and write a summary.
   version: "1.0.0"
-mode: file
+atom: file
+scope: 1
+recurse: true
 steps:
-  - module: rename-path
+  - module: verify-rename-path
     name: Rename File
     params:
       prefix: ""
-      suffix: "_done"
-  - module: write-summary
-    name: Generate Summary
+      suffix: "_renamed"
+  - module: verify-write-summary
+    name: Write Summary
     params:
-      filename: "file-workflow-summary.txt"
-      title: "File Workflow Report"
+      filename: "renames-summary.txt"
+      title: "Rename Report"

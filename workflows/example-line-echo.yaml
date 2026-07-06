@@ -1,0 +1,13 @@
+meta:
+  name: Line Echo
+  description: atom=line + per-unit — each non-empty text line becomes one unit.
+  version: "1.0.0"
+atom: line
+scope: 1
+recurse: false
+steps:
+  - module: verify-line-echo
+    name: Echo Line
+    params:
+      prefix: "task"
+      extension: ".txt"

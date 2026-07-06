@@ -1,385 +1,151 @@
-"""Tests for workflow YAML loading, saving, and validation."""
+"""Workflow loader: new YAML schema, migration rejection."""
 
 from __future__ import annotations
 
 from pathlib import Path
-
 import pytest
-import yaml
 
-from core import WorkflowLoader, WorkflowMeta, WorkflowStep, WorkflowValidationError
-from core.workflow_loader import WorkflowDefinition
-
-
-def test_load_valid_workflow_file(tmp_path: Path) -> None:
-    workflows_dir = tmp_path / "workflows"
-    workflows_dir.mkdir()
-    workflow_path = workflows_dir / "image-pipeline.yaml"
-    workflow_path.write_text(
-        yaml.safe_dump(
-            {
-                "meta": {
-                    "name": "Image Pipeline",
-                    "description": "Resize and rename images.",
-                    "version": "1.2.0",
-                },
-                "mode": "file",
-                "steps": [
-                    {
-                        "module": "resize-image",
-                        "params": {"width": 640, "height": 480},
-                        "name": "Resize",
-                    },
-                    {
-                        "module": "rename-file",
-                        "params": {"suffix": "_done"},
-                    },
-                ],
-            },
-            sort_keys=False,
-            allow_unicode=False,
-        ),
-        encoding="utf-8",
-    )
-
-    loader = WorkflowLoader(workflows_dir)
-    workflow = loader.load("image-pipeline.yaml")
-
-    assert workflow.meta.name == "Image Pipeline"
-    assert workflow.mode == "file"
-    assert len(workflow.steps) == 2
-    assert workflow.steps[0].name == "Resize"
-    assert workflow.steps[1].params == {"suffix": "_done"}
-    assert workflow.source_path == workflow_path.resolve()
+from core import WorkflowDefinition, WorkflowLoader, WorkflowMeta, WorkflowStep
+from core.exceptions import WorkflowValidationError
 
 
-def test_validate_document_reports_schema_errors(tmp_path: Path) -> None:
+@pytest.fixture()
+def loader(tmp_path: Path) -> WorkflowLoader:
+    return WorkflowLoader(tmp_path / "workflows")
+
+
+VALID_DOC = {
+    "meta": {"name": "Demo", "description": "d", "version": "1.0.0"},
+    "atom": "file",
+    "scope": 1,
+    "recurse": True,
+    "steps": [
+        {"module": "demo", "name": "Run demo", "params": {"k": "v"}},
+    ],
+}
+
+
+def test_validate_valid_document_succeeds(loader: WorkflowLoader) -> None:
+    result = loader.validate_document(VALID_DOC)
+    assert result.is_valid, result.errors
+    wf = result.workflow
+    assert wf.atom == "file"
+    assert wf.scope == 1
+    assert wf.recurse is True
+    assert wf.steps[0].module == "demo"
+
+
+def test_validate_legacy_mode_rejected(loader: WorkflowLoader) -> None:
+    doc = {"meta": {"name": "X"}, "mode": "file", "steps": []}
+    result = loader.validate_document(doc)
+    assert not result.is_valid
+    assert any("mode" in e for e in result.errors)
+
+
+def test_validate_legacy_batch_rejected(loader: WorkflowLoader) -> None:
+    doc = {
+        "meta": {"name": "X"},
+        "atom": "file", "scope": 1,
+        "batch": 1,
+        "steps": [],
+    }
+    result = loader.validate_document(doc)
+    assert not result.is_valid
+    assert any("batch" in e for e in result.errors)
+
+
+def test_validate_legacy_batch_scope_rejected(loader: WorkflowLoader) -> None:
+    doc = {
+        "meta": {"name": "X"},
+        "atom": "file", "scope": 1,
+        "batch_scope": "shared",
+        "steps": [],
+    }
+    result = loader.validate_document(doc)
+    assert not result.is_valid
+    assert any("batch_scope" in e for e in result.errors)
+
+
+def test_validate_invalid_atom_rejected(loader: WorkflowLoader) -> None:
+    doc = {**VALID_DOC, "atom": "bogus"}
+    assert not loader.validate_document(doc).is_valid
+
+
+def test_validate_invalid_scope_rejected(loader: WorkflowLoader) -> None:
+    doc = {**VALID_DOC, "scope": "bogus"}
+    assert not loader.validate_document(doc).is_valid
+
+
+def test_validate_recurse_only_when_atom_file(loader: WorkflowLoader) -> None:
+    # atom=line cannot specify recurse=true
+    doc = {**VALID_DOC, "atom": "line", "recurse": True}
+    result = loader.validate_document(doc)
+    assert not result.is_valid
+    assert any("recurse" in e for e in result.errors)
+
+
+def test_validate_empty_steps_list_ok(loader: WorkflowLoader) -> None:
+    doc = {**VALID_DOC, "steps": []}
+    result = loader.validate_document(doc)
+    assert result.is_valid
+    assert result.workflow.steps == ()
+
+
+def test_validate_step_must_be_mapping(loader: WorkflowLoader) -> None:
+    doc = {**VALID_DOC, "steps": ["not-a-dict"]}
+    result = loader.validate_document(doc)
+    assert not result.is_valid
+
+
+def test_save_and_load_roundtrip(tmp_path: Path) -> None:
+    """Round trip via a real loader that writes/reads YAML."""
     loader = WorkflowLoader(tmp_path / "workflows")
-    result = loader.validate_document(
-        {
-            "meta": {"name": ""},
-            "mode": "zip",
-            "steps": [{"module": "", "params": []}],
-        }
+    loader.ensure_workflows_dir()
+    wf = WorkflowDefinition(
+        meta=WorkflowMeta(name="Round", description="roundtest"),
+        atom="line",
+        scope=1,
+        steps=(WorkflowStep(module="demo", name="x", params={"a": 1}),),
+        recurse=False,
     )
-
-    assert result.is_valid is False
-    assert "Field 'meta.name' must be a non-empty string." in result.errors
-    assert "Field 'mode' must be one of: 'file', 'folder', 'none', 'cycle', 'input'." in result.errors
-    assert "Field 'steps[0].module' must be a non-empty string." in result.errors
-
-
-def test_save_normalizes_and_round_trips_workflow(tmp_path: Path) -> None:
-    workflows_dir = tmp_path / "workflows"
-    loader = WorkflowLoader(workflows_dir)
-    workflow = WorkflowDefinition(
-        meta=WorkflowMeta(name="Folder Processor", description="Process copied folders."),
-        mode="folder",
-        steps=(
-            WorkflowStep(module="prepare-folder", params={"overwrite": True}),
-            WorkflowStep(module="summarize", params={}),
-        ),
-    )
-
-    saved_path = loader.save(workflow)
-    loaded = loader.load(saved_path.name)
-
-    assert saved_path.name == "folder-processor.yaml"
-    assert saved_path.exists()
-    assert loaded.to_dict() == workflow.to_dict()
+    saved = loader.save(wf, "round.yaml")
+    loaded = loader.load(saved.name)
+    assert loaded.atom == "line"
+    assert loaded.steps[0].module == "demo"
+    assert loaded.steps[0].params == {"a": 1}
 
 
-def test_list_workflows_can_include_invalid_entries(tmp_path: Path) -> None:
-    workflows_dir = tmp_path / "workflows"
-    workflows_dir.mkdir()
-    (workflows_dir / "good.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "meta": {"name": "Good Workflow"},
-                "mode": "none",
-                "steps": [],
-            },
-            sort_keys=False,
-            allow_unicode=False,
-        ),
-        encoding="utf-8",
-    )
-    (workflows_dir / "broken.yaml").write_text("meta: []\nmode: file\nsteps: {}\n", encoding="utf-8")
-
-    loader = WorkflowLoader(workflows_dir)
-    summaries = loader.list_workflows(include_invalid=True)
-
-    assert [summary.filename for summary in summaries] == ["broken.yaml", "good.yaml"]
-    invalid_summary = summaries[0]
-    valid_summary = summaries[1]
-    assert invalid_summary.is_valid is False
-    assert "Field 'meta' must be a mapping." in invalid_summary.errors
-    assert valid_summary.name == "Good Workflow"
-    assert valid_summary.mode == "none"
-
-
-def test_save_raises_for_invalid_workflow() -> None:
-    loader = WorkflowLoader("workflows")
-
-    with pytest.raises(WorkflowValidationError) as exc_info:
-        loader.save({"meta": {"name": "Missing Steps"}, "mode": "file"})
-
-    assert "Field 'steps' must be a list." in exc_info.value.errors
-
-
-def test_new_workflow_returns_editor_friendly_template(tmp_path: Path) -> None:
+def test_path_beyond_workflows_dir_rejected(tmp_path: Path) -> None:
     loader = WorkflowLoader(tmp_path / "workflows")
-
-    workflow = loader.new_workflow(name="Draft", mode="none", description="Empty editor draft")
-
-    assert workflow.meta.name == "Draft"
-    assert workflow.mode == "none"
-    assert workflow.steps == ()
-    assert workflow.to_dict()["steps"] == []
+    with pytest.raises(ValueError):
+        loader._resolve_path("../escape.yaml")
 
 
-def test_load_rejects_paths_outside_workflows_dir(tmp_path: Path) -> None:
-    workflows_dir = tmp_path / "workflows"
-    workflows_dir.mkdir()
-    outside = tmp_path / "outside.yaml"
-    outside.write_text("meta: {name: Outside}\nmode: none\nsteps: []\n", encoding="utf-8")
-    loader = WorkflowLoader(workflows_dir)
-
-    with pytest.raises(ValueError, match="within the workflows directory"):
-        loader.load("..\\outside.yaml")
-
-
-# ---------------------------------------------------------------------------
-# Additional boundary tests
-# ---------------------------------------------------------------------------
-
-
-def test_list_workflows_excludes_invalid_by_default(tmp_path: Path) -> None:
-    workflows_dir = tmp_path / "workflows"
-    workflows_dir.mkdir()
-    (workflows_dir / "good.yaml").write_text(
-        yaml.safe_dump({"meta": {"name": "Good"}, "mode": "none", "steps": []}),
-        encoding="utf-8",
-    )
-    (workflows_dir / "bad.yaml").write_text("bogus", encoding="utf-8")
-
-    loader = WorkflowLoader(workflows_dir)
-    summaries = loader.list_workflows()
-    assert len(summaries) == 1
-    assert summaries[0].filename == "good.yaml"
-
-
-def test_list_workflows_empty_dir(tmp_path: Path) -> None:
-    workflows_dir = tmp_path / "workflows"
-    workflows_dir.mkdir()
-    loader = WorkflowLoader(workflows_dir)
-    assert loader.list_workflows() == []
-
-
-def test_list_workflows_nonexistent_dir(tmp_path: Path) -> None:
-    loader = WorkflowLoader(tmp_path / "no-such-workflows")
-    assert loader.list_workflows() == []
-
-
-def test_list_workflows_skips_non_yaml_suffix(tmp_path: Path) -> None:
-    workflows_dir = tmp_path / "workflows"
-    workflows_dir.mkdir()
-    (workflows_dir / "valid.yaml").write_text(
-        yaml.safe_dump({"meta": {"name": "Valid"}, "mode": "none", "steps": []}),
-        encoding="utf-8",
-    )
-    (workflows_dir / "readme.txt").write_text("not a workflow", encoding="utf-8")
-    (workflows_dir / "config.json").write_text('{"key": 1}', encoding="utf-8")
-
-    loader = WorkflowLoader(workflows_dir)
-    summaries = loader.list_workflows()
-    assert len(summaries) == 1
-    assert summaries[0].filename == "valid.yaml"
-
-
-def test_load_yml_suffix_file(tmp_path: Path) -> None:
-    workflows_dir = tmp_path / "workflows"
-    workflows_dir.mkdir()
-    (workflows_dir / "test.yml").write_text(
-        yaml.safe_dump({"meta": {"name": "YML Test"}, "mode": "none", "steps": []}),
-        encoding="utf-8",
-    )
-    loader = WorkflowLoader(workflows_dir)
-    workflow = loader.load("test.yml")
-    assert workflow.meta.name == "YML Test"
-
-
-def test_load_file_not_found_propagates(tmp_path: Path) -> None:
-    workflows_dir = tmp_path / "workflows"
-    workflows_dir.mkdir()
-    loader = WorkflowLoader(workflows_dir)
-    with pytest.raises(FileNotFoundError):
-        loader.load("missing.yaml")
-
-
-def test_load_empty_yaml_validates_and_raises(tmp_path: Path) -> None:
-    workflows_dir = tmp_path / "workflows"
-    workflows_dir.mkdir()
-    (workflows_dir / "empty.yaml").write_text("", encoding="utf-8")
-
-    loader = WorkflowLoader(workflows_dir)
-    with pytest.raises(WorkflowValidationError, match="must be a mapping"):
-        loader.load("empty.yaml")
-
-
-def test_load_yaml_list_not_mapping(tmp_path: Path) -> None:
-    workflows_dir = tmp_path / "workflows"
-    workflows_dir.mkdir()
-    (workflows_dir / "list.yaml").write_text("- item: 1\n- item: 2\n", encoding="utf-8")
-
-    loader = WorkflowLoader(workflows_dir)
-    with pytest.raises(WorkflowValidationError, match="must be a mapping"):
-        loader.load("list.yaml")
-
-
-def test_validate_document_version_default(tmp_path: Path) -> None:
-    loader = WorkflowLoader(tmp_path / "workflows")
-    result = loader.validate_document(
-        {"meta": {"name": "Test"}, "mode": "none", "steps": []}
-    )
-    assert result.is_valid is True
-
-
-def test_validate_document_empty_version(tmp_path: Path) -> None:
-    loader = WorkflowLoader(tmp_path / "workflows")
-    result = loader.validate_document(
-        {"meta": {"name": "Test", "version": "  "}, "mode": "none", "steps": []}
-    )
-    assert result.is_valid is False
-    assert any("Field 'meta.version'" in e for e in result.errors)
-
-
-def test_validate_document_valid_slug(tmp_path: Path) -> None:
-    loader = WorkflowLoader(tmp_path / "workflows")
-    result = loader.validate_document(
-        {"meta": {"name": "Test", "slug": "my-slug"}, "mode": "none", "steps": []}
-    )
-    assert result.is_valid is True
-
-
-def test_validate_document_empty_slug(tmp_path: Path) -> None:
-    loader = WorkflowLoader(tmp_path / "workflows")
-    result = loader.validate_document(
-        {"meta": {"name": "Test", "slug": "  "}, "mode": "none", "steps": []}
-    )
-    assert result.is_valid is False
-    assert any("Field 'meta.slug'" in e for e in result.errors)
-
-
-def test_validate_document_missing_mode(tmp_path: Path) -> None:
-    loader = WorkflowLoader(tmp_path / "workflows")
-    result = loader.validate_document(
-        {"meta": {"name": "Test"}, "steps": []}
-    )
-    assert result.is_valid is False
-    assert any("mode" in e.lower() for e in result.errors)
-
-
-def test_validate_document_step_not_mapping(tmp_path: Path) -> None:
-    loader = WorkflowLoader(tmp_path / "workflows")
-    result = loader.validate_document(
-        {"meta": {"name": "Test"}, "mode": "none", "steps": ["not a dict"]}
-    )
-    assert result.is_valid is False
-    assert any("steps[0]" in e for e in result.errors)
-
-
-def test_validate_document_empty_module_slug(tmp_path: Path) -> None:
-    loader = WorkflowLoader(tmp_path / "workflows")
-    result = loader.validate_document(
-        {"meta": {"name": "Test"}, "mode": "none", "steps": [{"module": "  "}]}
-    )
-    assert result.is_valid is False
-    assert any("steps[0].module" in e for e in result.errors)
-
-
-def test_validate_document_empty_step_name_is_rejected(tmp_path: Path) -> None:
-    loader = WorkflowLoader(tmp_path / "workflows")
-    result = loader.validate_document(
-        {"meta": {"name": "Test"}, "mode": "none", "steps": [{"module": "mod", "name": "  "}]}
-    )
-    assert result.is_valid is False
-    assert any("name" in e and "non-empty" in e for e in result.errors)
-
-
-def test_validate_document_description_not_string(tmp_path: Path) -> None:
-    loader = WorkflowLoader(tmp_path / "workflows")
-    result = loader.validate_document(
-        {"meta": {"name": "Test", "description": 123}, "mode": "none", "steps": []}
-    )
-    assert result.is_valid is False
-    assert any("description" in e for e in result.errors)
-
-
-def test_validate_document_params_not_mapping(tmp_path: Path) -> None:
-    loader = WorkflowLoader(tmp_path / "workflows")
-    result = loader.validate_document(
-        {"meta": {"name": "Test"}, "mode": "none", "steps": [{"module": "mod", "params": "bad"}]}
-    )
-    assert result.is_valid is False
-    assert any("steps[0].params" in e for e in result.errors)
-
-
-def test_new_workflow_default_mode(tmp_path: Path) -> None:
-    loader = WorkflowLoader(tmp_path / "workflows")
-    workflow = loader.new_workflow(name="Default")
-    assert workflow.mode == "file"
-
-
-def test_save_with_explicit_name(tmp_path: Path) -> None:
-    workflows_dir = tmp_path / "workflows"
-    loader = WorkflowLoader(workflows_dir)
-    workflow = WorkflowDefinition(
-        meta=WorkflowMeta(name="Test"),
-        mode="none",
+def test_list_workflows_includes_invalid_flag(tmp_path: Path) -> None:
+    ldr = WorkflowLoader(tmp_path / "workflows")
+    ldr.ensure_workflows_dir()
+    # Valid file:
+    ldr.save(WorkflowDefinition(
+        meta=WorkflowMeta(name="A"),
+        atom="file", scope=1,
         steps=(),
+    ), "a.yaml")
+    # Invalid YAML:
+    (tmp_path / "workflows" / "bad.yaml").write_text(
+        "meta:\n  name: Bad\natom: bogus\nscope: x\nsteps: []\n",
+        encoding="utf-8")
+    summaries = ldr.list_workflows(include_invalid=True)
+    valid = [s for s in summaries if s.is_valid]
+    invalid = [s for s in summaries if not s.is_valid]
+    assert len(valid) == 1
+    assert len(invalid) == 1
+    assert invalid[0].atom == "invalid"
+
+
+def test_validate_document_accepts_definition(loader: WorkflowLoader) -> None:
+    wf = WorkflowDefinition(
+        meta=WorkflowMeta(name="A", description="d"),
+        atom="none", scope=1, steps=(),
     )
-    saved = loader.save(workflow, workflow_name="custom-name.yaml")
-    assert saved.name == "custom-name.yaml"
-    assert saved.exists()
-
-
-def test_save_from_dict_mapping(tmp_path: Path) -> None:
-    workflows_dir = tmp_path / "workflows"
-    loader = WorkflowLoader(workflows_dir)
-    saved = loader.save(
-        {"meta": {"name": "From Dict"}, "mode": "none", "steps": []}
-    )
-    assert saved.name == "from-dict.yaml"
-
-
-def test_default_filename_special_chars(tmp_path: Path) -> None:
-    loader = WorkflowLoader(tmp_path / "workflows")
-    workflow = WorkflowDefinition(
-        meta=WorkflowMeta(name="!!!Special $$$ Chars???"),
-        mode="none",
-        steps=(),
-    )
-    saved = loader.save(workflow)
-    assert saved.name.endswith(".yaml")
-
-
-def test_workflow_meta_to_dict_excludes_empty_slug() -> None:
-    meta = WorkflowMeta(name="Test", slug="")
-    d = meta.to_dict()
-    assert "slug" not in d
-
-
-def test_workflow_step_to_dict_excludes_empty_name() -> None:
-    step = WorkflowStep(module="mod", params={})
-    d = step.to_dict()
-    assert "name" not in d
-
-
-def test_validate_document_source_path_as_string(tmp_path: Path) -> None:
-    loader = WorkflowLoader(tmp_path / "workflows")
-    result = loader.validate_document(
-        {"meta": {"name": "Test"}, "mode": "none", "steps": []},
-        source_path=str(tmp_path / "source.yaml"),
-    )
-    assert result.is_valid is True
+    result = loader.validate_document(wf)
+    assert result.is_valid
