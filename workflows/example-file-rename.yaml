@@ -1,0 +1,16 @@
+meta:
+  name: File Rename Example
+  description: Rename file copies and generate a summary.
+  version: "1.0.0"
+mode: file
+steps:
+  - module: rename-path
+    name: Rename File
+    params:
+      prefix: ""
+      suffix: "_done"
+  - module: write-summary
+    name: Generate Summary
+    params:
+      filename: "file-workflow-summary.txt"
+      title: "File Workflow Report"

@@ -1,0 +1,12 @@
+meta:
+  name: 提取图集
+  description: "从 ZIP 压缩包中随机提取图片并生成 info.json 信息文件"
+  version: "1.0.0"
+mode: file
+steps:
+  - module: extract-archive
+    name: 提取图集
+    params:
+      extract_count: 6
+      image_extensions: "jpg jpeg png gif bmp webp"
+      video_extensions: "mp4 mov mkv wmv flv webm avi"

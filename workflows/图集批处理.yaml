@@ -1,0 +1,37 @@
+meta:
+  name: 图集批处理
+  description: ''
+  version: "1.0.0"
+  slug: bde58310
+mode: folder
+steps:
+- module: flatten-folder
+  params:
+    prefix_separator: _
+    subfolder_first: false
+- module: strip-attributes
+  params:
+    remove_hidden: false
+    remove_readonly: true
+- module: normalize-extensions
+  params:
+    lowercase: true
+- module: delete-files
+  params:
+    patterns: '*.txt *.url *.html *.htm Thumbs.db desktop.ini *.org'
+- module: exiftool-clean
+  params:
+    charset_filename: '936'
+    exiftool_path: ''
+    keep_datetime: false
+    keep_orientation: true
+    recursive: true
+- module: gallery-rename
+  params:
+    image_extensions: jpg jpeg png
+    padding: 3
+    video_extensions: mp4 mov mkv wmv flv
+- module: gallery-count
+  params:
+    image_extensions: jpg jpeg png
+    video_extensions: mp4 mov mkv wmv flv

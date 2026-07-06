@@ -1,0 +1,36 @@
+meta:
+  name: "视频AI处理 - 去隔行补帧超分"
+  description: "完整管线: VapourSynth 去隔行 → RIFE 补帧 → ML 超分 → FFmpeg 编码"
+  version: "1.0.0"
+mode: file
+steps:
+  - module: vs-deinterlace
+    name: "去隔行处理"
+    params:
+      method: "bwdif"
+      double_rate: true
+      output_format: "y4m"
+
+  - module: vs-frame-interpolate
+    name: "RIFE 补帧"
+    params:
+      model: "rife-v4.6_ensemble"
+      factor: "2x"
+      output_format: "y4m"
+      gpu: true
+
+  - module: vs-super-resolution
+    name: "ML 超分"
+    params:
+      model: "RealESRGAN_x4plus"
+      scale_factor: "2x"
+      output_format: "y4m"
+      gpu: true
+
+  - module: ffmpeg-compose
+    name: "编码合成"
+    params:
+      encoder: "libx264"
+      preset: "medium"
+      crf: 18
+      output_container: "mp4"

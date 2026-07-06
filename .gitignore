@@ -1,0 +1,29 @@
+# Shell Worker Platform
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Downloaded external tools (keep install scripts)
+resources/**/*.exe
+resources/**/*.dll
+resources/**/*.onnx
+resources/**/*.7z
+resources/**/*.zip
+!resources/**/*.ps1
+!resources/**/.gitkeep
