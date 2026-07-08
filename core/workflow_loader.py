@@ -31,14 +31,13 @@ from typing import Any
 
 import yaml
 
-from .context import Atom
+from .context import PipelineContext  # noqa: F401 — re-export surface unchanged
 from .exceptions import WorkflowValidationError
 
 WORKFLOW_SUFFIXES = (".yaml", ".yml")
 VALID_ATOMS = ("file", "folder", "line", "none")
-# scope: 0 = shared (single task), 1 = per-unit (isolated), >1 reserved for batch
-VALID_SCOPES = (0, 1)
-_RECURSE_ONLY_ATOMS = ("file",)
+# scope: 0 = shared (single task), 1 = per-unit (isolated), >1 = fixed-size batch
+VALID_SCOPES = ">=0"
 
 
 @dataclass(frozen=True)
@@ -78,30 +77,32 @@ class WorkflowStep:
 @dataclass(frozen=True)
 class WorkflowDefinition:
     meta: WorkflowMeta
-    atom: Atom
     scope: int
     steps: tuple[WorkflowStep, ...]
+    atom: str | None = None
     recurse: bool = False
     source_path: Path | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "meta": self.meta.to_dict(),
-            "atom": self.atom,
             "scope": self.scope,
             "recurse": self.recurse,
             "steps": [step.to_dict() for step in self.steps],
         }
+        if self.atom is not None:
+            data["atom"] = self.atom
+        return data
 
 
 @dataclass(frozen=True)
 class WorkflowSummary:
     filename: str
     name: str
-    atom: str
     scope: int
     step_count: int
     path: Path
+    atom: str = ""
     description: str = ""
     recurse: bool = False
     is_valid: bool = True
@@ -129,7 +130,7 @@ class WorkflowLoader:
         self,
         name: str = "New Workflow",
         *,
-        atom: str = "file",
+        atom: str | None = "file",
         scope: int = 1,
         recurse: bool = False,
         description: str = "",
@@ -156,7 +157,7 @@ class WorkflowLoader:
                         filename=path.name,
                         name=wf.meta.name,
                         description=wf.meta.description,
-                        atom=wf.atom,
+                        atom=wf.atom or "",
                         scope=wf.scope,
                         recurse=wf.recurse,
                         step_count=len(wf.steps),
@@ -251,22 +252,20 @@ class WorkflowLoader:
             slug = ""
 
         atom = doc.get("atom")
-        if not isinstance(atom, str) or atom not in VALID_ATOMS:
-            errors.append("Field 'atom' must be one of: " + ", ".join(f"'{a}'" for a in VALID_ATOMS) + ".")
+        if atom is None:
+            atom_value: str | None = None
+        elif isinstance(atom, str) and atom in VALID_ATOMS:
+            atom_value = atom
+        else:
+            errors.append("Field 'atom' must be one of: " + ", ".join(f"'{a}'" for a in VALID_ATOMS) + " (optional, GUI metadata only).")
+            atom_value = None
         scope = doc.get("scope")
-        if not isinstance(scope, int) or scope not in VALID_SCOPES:
-            errors.append("Field 'scope' must be an integer in " + ", ".join(str(s) for s in VALID_SCOPES) + ".")
+        if not isinstance(scope, int) or scope < 0:
+            errors.append("Field 'scope' must be an integer >= 0.")
         recurse = doc.get("recurse", False)
         if not isinstance(recurse, bool):
             errors.append("Field 'recurse' must be a boolean (omitted → false).")
             recurse = False
-        if atom in _RECURSE_ONLY_ATOMS:
-            # recurse only meaningful when atom == file
-            pass
-        if atom not in _RECURSE_ONLY_ATOMS and recurse:
-            errors.append(
-                f"Field 'recurse=true' 仅在 atom ∈ {list(_RECURSE_ONLY_ATOMS)} 时有意义；当前 atom='{atom}'。"
-            )
 
         raw_steps = doc.get("steps")
         if not isinstance(raw_steps, list):
@@ -308,7 +307,7 @@ class WorkflowLoader:
                 version=version.strip(),
                 slug=slug.strip() if isinstance(slug, str) else "",
             ),
-            atom=atom,
+            atom=atom_value,
             scope=scope,
             recurse=recurse,
             steps=tuple(steps),

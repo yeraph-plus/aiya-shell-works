@@ -22,9 +22,9 @@ from .context import PipelineContext
 
 LOGGER = logging.getLogger(__name__)
 
-VALID_ATOMS = ("file", "folder", "line", "none")
-# scope: 0 = shared, 1 = per-unit, >1 reserved for batch
-VALID_SCOPES = (0, 1)
+VALID_ATOMS = ("file", "folder", "line", "none")  # GUI metadata only — no kernel constraint
+# scope: 0 = shared, 1 = per-unit, >1 = fixed-size batch
+VALID_SCOPES = ">=0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,7 +39,7 @@ class ModuleDefinition:
     module: ModuleType
     core_version: str = "2.0.0"
     tags: tuple[str, ...] = ()
-    atom: tuple[str, ...] = ()
+    is_file_module: bool = True
     scope: int = 1
     parent: str | None = None
 
@@ -149,21 +149,15 @@ class ModuleManager:
             return None
         tags = tuple(t.strip() for t in raw_tags)
 
-        raw_atom = meta.get("atom", [])
-        if (
-            not isinstance(raw_atom, list)
-            or not raw_atom
-            or not all(isinstance(a, str) and a in VALID_ATOMS for a in raw_atom)
-        ):
-            self._warn(f"MODULE_META.atom 必须是非空列表且值在 {'/'.join(VALID_ATOMS)} 中，已忽略: {path}")
+        raw_is_file_module = meta.get("is_file_module")
+        if not isinstance(raw_is_file_module, bool):
+            self._warn(f"MODULE_META.is_file_module 必须是布尔值，已忽略: {path}")
             return None
-        atom = tuple(raw_atom)
+        is_file_module = raw_is_file_module
 
         raw_scope = meta.get("scope", 1)
-        if not isinstance(raw_scope, int) or raw_scope not in VALID_SCOPES:
-            self._warn(
-                f"MODULE_META.scope 必须是整数且值在 {'/'.join(str(s) for s in VALID_SCOPES)} 中，已忽略: {path}"
-            )
+        if not isinstance(raw_scope, int) or raw_scope < 0:
+            self._warn(f"MODULE_META.scope 必须是 >= 0 的整数，已忽略: {path}")
             return None
         scope = raw_scope
 
@@ -197,7 +191,7 @@ class ModuleManager:
             module=module,
             core_version=core_version.strip(),
             tags=tags,
-            atom=atom,
+            is_file_module=is_file_module,
             scope=scope,
             parent=parent,
         )

@@ -1,17 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec — Shell Worker Platform v2.0.0 (Windows x64)
 
-Produces a single ``dist/shell-worker/`` directory with:
-  * shell-worker-cli.exe  — console entry (core only at runtime)
-  * shell-worker-gui.exe  — windowed entry (core + PySide6)
-  * _internal/            — shared runtime (one copy, NO duplication)
-  * modules/              — external .py modules (not compiled)
-  * workflows/            — external .yaml workflows
-  * resources/            — external tools / installers
+Produces two self-contained single-file EXEs (no shared _internal/):
 
-All three data directories are *excluded* from the PyInstaller bundle so
-users can add/remove modules and workflows without rebuilding.  They are
-copied into the dist by ``windows_build_exe.bat`` after the build finishes.
+  dist/shell-worker.exe      — console CLI (core only, ~10 MB)
+  dist/shell-worker-gui.exe  — windowed GUI (core + PySide6, ~46 MB)
+
+Both are moved to the project root by build_portable_exe.bat.
+modules/ workflows/ resources/ are external, never bundled.
 """
 
 import sys
@@ -20,51 +16,120 @@ from pathlib import Path
 ROOT = Path(SPECPATH).parent  # noqa: F821
 
 # ---------------------------------------------------------------------------
-# Collect PySide6 hook data so the GUI entry can bootstrap the Qt runtime.
+# Common excludes — never used by this project
 # ---------------------------------------------------------------------------
-try:
-    from PyInstaller.utils.hooks import collect_data_files
-    _pyside_datas = collect_data_files('PySide6')
-except Exception:
-    _pyside_datas = []
+_COMMON_EXCLUDES = [
+    'tkinter',
+    'unittest',
+    'test',
+]
 
-# ---------------------------------------------------------------------------
-# Single Analysis with BOTH entry points.
-# ``exclude_binaries=True`` on EXE() keeps each .exe thin (~3 MB).
-# COLLECT() puts all shared binaries + data into ``_internal/`` once.
-# ---------------------------------------------------------------------------
-a = Analysis(
-    ['main_cli.py', 'main_gui.pyw'],
+# Qt sub-modules that pull in heavy native DLLs (WebEngine, Quick/QML,
+# 3D, Multimedia, Charts, etc.).  The GUI only requires QtCore, QtGui,
+# QtWidgets, and QtNetwork so these are safe to prune.
+_QT_HEAVY_EXCLUDES = [
+    # WebEngine — Chromium runtime, ~200 MB
+    'PySide6.QtWebEngineCore',
+    'PySide6.QtWebEngineWidgets',
+    'PySide6.QtWebEngineQuick',
+    'PySide6.QtWebChannel',
+    # Quick / QML stack, ~100 MB
+    'PySide6.QtQuick',
+    'PySide6.QtQuickWidgets',
+    'PySide6.QtQuick3D',
+    'PySide6.QtQuick3DHelpers',
+    'PySide6.QtQuickControls2',
+    'PySide6.QtQuickTemplates2',
+    'PySide6.QtQuickTimeline',
+    'PySide6.QtQml',
+    'PySide6.QtQmlCore',
+    'PySide6.QtQmlLocalStorage',
+    'PySide6.QtQmlModels',
+    'PySide6.QtQmlWorkerScript',
+    'PySide6.QtQmlXmlListModel',
+    'PySide6.QtShaderTools',
+    # 3D, ~30 MB
+    'PySide6.Qt3DAnimation',
+    'PySide6.Qt3DCore',
+    'PySide6.Qt3DExtras',
+    'PySide6.Qt3DInput',
+    'PySide6.Qt3DLogic',
+    'PySide6.Qt3DRender',
+    # Multimedia, ~50 MB
+    'PySide6.QtMultimedia',
+    'PySide6.QtMultimediaWidgets',
+    'PySide6.QtSpatialAudio',
+    # Charts / visualization, ~20 MB
+    'PySide6.QtCharts',
+    'PySide6.QtDataVisualization',
+    'PySide6.QtGraphs',
+    'PySide6.QtGraphsWidgets',
+    # Other never-used modules
+    'PySide6.QtBodymovin',
+    'PySide6.QtDesigner',
+    'PySide6.QtHelp',
+    'PySide6.QtLocation',
+    'PySide6.QtPdf',
+    'PySide6.QtPdfWidgets',
+    'PySide6.QtConcurrent',
+    'PySide6.QtHttpServer',
+    'PySide6.QtProtobuf',
+    'PySide6.QtGrpc',
+    'PySide6.QtBluetooth',
+    'PySide6.QtNfc',
+    'PySide6.QtSensors',
+    'PySide6.QtSerialPort',
+    'PySide6.QtSql',
+    'PySide6.QtTest',
+    'PySide6.QtUiTools',
+    'PySide6.QtAxContainer',
+    'PySide6.QtDBus',
+    'PySide6.QtRemoteObjects',
+    'PySide6.QtScxml',
+    'PySide6.QtStateMachine',
+    'PySide6.QtTextToSpeech',
+    'PySide6.QtWebSockets',
+    'PySide6.QtWebView',
+    'PySide6.QtNetworkInformation',
+    'PySide6.QtLabsAnimation',
+    'PySide6.QtLabsFolderListModel',
+    'PySide6.QtLabsSettings',
+    'PySide6.QtLabsSharedImage',
+    'PySide6.QtLabsWavefrontMesh',
+]
+
+# ============================================================================
+# Analysis A — CLI (core + PyYAML + pywinpty, NO Qt)
+# ============================================================================
+a_cli = Analysis(
+    ['main.py'],
     pathex=[str(ROOT)],
     binaries=[],
-    datas=_pyside_datas,
-    hiddenimports=[
-        'PySide6.QtWidgets',
-        'PySide6.QtCore',
-        'PySide6.QtGui',
-        'PySide6.QtNetwork',
-    ],
+    datas=[],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[
-        'tkinter',
-        'unittest',
-        'test',
+    excludes=_COMMON_EXCLUDES + [
+        'PySide6',
+        'PySide6.QtCore',
+        'PySide6.QtGui',
+        'PySide6.QtWidgets',
+        'PySide6.QtNetwork',
     ],
     noarchive=False,
     optimize=0,
 )
 
-pyz = PYZ(a.pure)  # noqa: F821
+pyz_cli = PYZ(a_cli.pure)  # noqa: F821
 
-# -- CLI entry (console visible) --------------------------------------------
 cli_exe = EXE(  # noqa: F821
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
-    name='shell-worker-cli',
+    pyz_cli,
+    a_cli.scripts,
+    a_cli.binaries,
+    a_cli.datas,
+    exclude_binaries=False,
+    name='shell-worker',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -80,12 +145,36 @@ cli_exe = EXE(  # noqa: F821
     icon=None,
 )
 
-# -- GUI entry (windowed — no console flash) ---------------------------------
+# ============================================================================
+# Analysis B — GUI (core + PySide6, heavy Qt modules excluded)
+# ============================================================================
+a_gui = Analysis(
+    ['main_gui.pyw'],
+    pathex=[str(ROOT)],
+    binaries=[],
+    datas=[],
+    hiddenimports=[
+        'PySide6.QtWidgets',
+        'PySide6.QtCore',
+        'PySide6.QtGui',
+        'PySide6.QtNetwork',
+    ],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=_COMMON_EXCLUDES + _QT_HEAVY_EXCLUDES,
+    noarchive=False,
+    optimize=0,
+)
+
+pyz_gui = PYZ(a_gui.pure)  # noqa: F821
+
 gui_exe = EXE(  # noqa: F821
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
+    pyz_gui,
+    a_gui.scripts,
+    a_gui.binaries,
+    a_gui.datas,
+    exclude_binaries=False,
     name='shell-worker-gui',
     debug=False,
     bootloader_ignore_signals=False,
@@ -100,16 +189,4 @@ gui_exe = EXE(  # noqa: F821
     codesign_identity=None,
     entitlements_file=None,
     icon=None,
-)
-
-# -- One COLLECT → single _internal/ shared by both EXEs ---------------------
-coll = COLLECT(  # noqa: F821
-    cli_exe,
-    gui_exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='shell-worker',
 )

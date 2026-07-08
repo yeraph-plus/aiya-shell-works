@@ -18,17 +18,18 @@ def collect_file_targets(
     *,
     extensions: frozenset[str] | None = None,
 ) -> list[Path]:
-    """Return files this module should process.
+    """Return files this module should process, derived from filesystem state.
 
-    Routing by ``context.atom`` (new contract):
+    * ``working_path`` is a file → ``[working_path]`` (subject to ``extensions``)
+    * ``working_path`` is a directory → its direct file children (subject to
+      ``extensions``); nested subdirectories are not recursed here.
+    * otherwise (e.g. nonexistent / mixed line input) → empty list.
 
-    * ``atom == "file"`` → ``working_path`` itself (must be a file)
-    * ``atom == "folder"`` or atom == "file" with recurse=False dir →
-      direct file children of ``working_path``
-    * any other atom → empty list
+    Modules no longer branch on ``ctx.atom``; the kernel derives behavior
+    from filesystem state so the same module can run under any unit shape.
     """
     wp = Path(context.working_path)
-    if context.atom == "file" and wp.is_file():
+    if wp.is_file():
         if extensions is not None and wp.suffix.lower() not in extensions:
             return []
         return [wp]

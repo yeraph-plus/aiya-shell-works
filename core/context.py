@@ -17,16 +17,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
-
-Atom = Literal["file", "folder", "line", "none"]
+from typing import Any
 
 _VALID_CLONE_FIELDS: frozenset[str] = frozenset(
     {
         "original_input",
         "working_path",
         "output_dir",
-        "atom",
         "shared",
         "extra_files",
         "source_root",
@@ -45,7 +42,6 @@ class PipelineContext:
     original_input: Path | None
     working_path: Path
     output_dir: Path
-    atom: Atom
     shared: dict[str, Any] = field(default_factory=dict)
     extra_files: list[Path] = field(default_factory=list)
     source_root: Path | None = None
@@ -73,7 +69,6 @@ class PipelineContext:
             "original_input": self.original_input,
             "working_path": self.working_path,
             "output_dir": self.output_dir,
-            "atom": self.atom,
             "shared": dict(self.shared),
             "extra_files": list(self.extra_files),
             "source_root": self.source_root,

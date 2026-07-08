@@ -1,12 +1,11 @@
 """GUI entry point for the Shell Worker platform.
 
 PySide6 is an optional dependency.  If unavailable this module raises an
-import error early so users will fall back to ``main_cli.py`` instead.
+import error early so users will fall back to ``main.py`` instead.
 """
 
 from __future__ import annotations
 
-import ctypes
 import os
 import sys
 from pathlib import Path
@@ -19,20 +18,8 @@ from PySide6.QtWidgets import QApplication
 from gui import MainWindow
 
 
-def _hide_console() -> None:
-    if sys.platform != "win32":
-        return
-    try:
-        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
-        if hwnd:
-            ctypes.windll.user32.ShowWindow(hwnd, 0)
-    except Exception:
-        pass
-
-
 def main() -> int:
     """Launch the desktop application."""
-    _hide_console()
     app = QApplication(sys.argv)
     project_dir = Path(__file__).resolve().parent
     window = MainWindow(project_dir)

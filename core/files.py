@@ -1,4 +1,4 @@
-"""File handler: working-copy builder for path inputs.
+"""File handler: working-copy builder for path and line inputs.
 
 Two responsibilities:
 
@@ -12,8 +12,11 @@ Two responsibilities:
    always created — even in direct mode — so extra产出 files have a
    guaranteed landing place.  See ``AGENTS.md`` §14.3 for the contract.
 
-In ``scope=shared`` all inputs are copied into ``output_dir`` and the unit
-becomes ``output_dir`` itself — a single batch task over a merged tree.
+In ``scope=shared`` all path inputs are copied into ``output_dir`` and the
+unit becomes ``output_dir`` itself — a single batch task over a merged tree.
+For ``scope>1`` the executor creates per-batch units; path batches are merged
+into isolated batch worktrees beneath ``output_dir`` and line batches are
+injected as ``ctx.shared["input_lines"]``.
 """
 
 from __future__ import annotations
@@ -58,10 +61,12 @@ def build_path_units(paths: list[Path], *, recurse: bool) -> list[dict[str, Any]
     return units
 
 
-def build_lines_units(lines: list[str]) -> list[dict[str, Any]]:
-    """One unit per non-empty text line (atom=line)."""
+def build_lines_units(lines: list[str], batch_size: int = 1) -> list[dict[str, Any]]:
+    """Return line-shaped units, optionally grouped into fixed-size batches."""
 
-    return [{"line": line} for line in lines]
+    if batch_size <= 1:
+        return [{"line": line} for line in lines]
+    return [{"lines": lines[index : index + batch_size]} for index in range(0, len(lines), batch_size)]
 
 
 # ---------------------------------------------------------------------------
@@ -90,29 +95,68 @@ class WorkingCopier:
             original_input=None,
             working_path=self.output_dir,
             output_dir=self.output_dir,
-            atom="none",
             shared=dict(shared or {}),
         )
 
     def prepare_line(self, unit: dict[str, Any], *, shared: Mapping[str, Any] | None = None) -> PipelineContext:
-        line = str(unit["line"])
+        lines = unit.get("lines")
+        if lines is None:
+            lines = [str(unit["line"])]
+        else:
+            lines = [str(line) for line in lines]
+        payload = {**(shared or {}), "input_lines": list(lines)}
+        if len(lines) == 1:
+            payload["input_line"] = lines[0]
         return PipelineContext(
             original_input=None,
             working_path=self.output_dir,
             output_dir=self.output_dir,
-            atom="line",
-            shared={**(shared or {}), "input_line": line},
+            shared=payload,
+        )
+
+    def prepare_batched_path_unit(
+        self,
+        units: list[dict[str, Any]],
+        *,
+        batch_index: int,
+        shared: Mapping[str, Any] | None = None,
+    ) -> PipelineContext:
+        """Merge one path batch into its own isolated worktree."""
+
+        if self.direct_mode:
+            raise FileHandlingError("scope>1 与 direct_mode 不兼容：批次需要 output_dir 形成独立工作树。")
+
+        batch_root = self._make_unique_path(self.output_dir / f"_batch_{batch_index:04d}")
+        batch_root.mkdir(parents=True, exist_ok=False)
+
+        for unit in units:
+            source = Path(unit["path"])
+            source_root = Path(unit["source_root"]) if unit.get("source_root") else None
+            self._ensure_existing(source)
+            if source_root is not None:
+                self._ensure_existing_directory(source_root, label="source root")
+            try:
+                if source.is_file():
+                    rel = self._resolve_relative(source, source_root)
+                    self._copy_into(source, batch_root / rel)
+                else:
+                    self._copy_into(source, batch_root / source.name)
+            except OSError as exc:
+                raise FileHandlingError(f"scope>1 批次复制失败: {source}") from exc
+
+        return PipelineContext(
+            original_input=None,
+            working_path=batch_root,
+            output_dir=self.output_dir,
+            shared=dict(shared or {}),
         )
 
     def prepare_path_unit(
         self,
         unit: dict[str, Any],
         *,
-        atom: str,
         shared: Mapping[str, Any] | None = None,
     ) -> PipelineContext:
-        # atom flows from validated WorkflowDefinition → guaranteed to be
-        # a valid Atom literal at runtime despite the annotation.
         source = Path(unit["path"])
         source_root = Path(unit["source_root"]) if unit.get("source_root") else None
 
@@ -135,7 +179,6 @@ class WorkingCopier:
             original_input=source,
             working_path=working_path,
             output_dir=self.output_dir,
-            atom=atom,
             shared=dict(shared or {}),
             source_root=source_root,
         )
@@ -170,7 +213,6 @@ class WorkingCopier:
             original_input=None,
             working_path=self.output_dir,
             output_dir=self.output_dir,
-            atom="file",
             shared=dict(shared or {}),
         )
 
@@ -244,9 +286,9 @@ class WorkingCopier:
 def units_from_plan(plan: InputPlan) -> list[dict[str, Any]]:
     """Pure unit construction from a plan — no filesystem copy yet."""
 
-    if plan.atom == "line":
+    if plan.kind == "line":
         return build_lines_units(list(plan.lines))
-    if plan.atom == "none":
+    if plan.kind == "none":
         return [{"path": None, "source_root": None}]
     return build_path_units(list(plan.files), recurse=plan.recurse)
 

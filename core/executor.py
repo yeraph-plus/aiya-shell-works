@@ -1,4 +1,4 @@
-"""Workflow executor: atom x scope x recurse driven unit dispatch.
+"""Workflow executor: input-plan x scope x recurse driven unit dispatch.
 
 Single-threaded execution with per-unit event-bus isolation.  Scope values
 control how inputs are batched into tasks:
@@ -10,8 +10,10 @@ control how inputs are batched into tasks:
   working tree (see ``files.py``) and the workflow runs exactly once
   over the merged output folder.  The module rglobs the working tree
   itself.
-* Scope values > 1 are reserved for future batch slicing; currently
-  treated as 1.
+* ``scope>1`` (batched) — inputs are sliced into fixed-size batches.  Each
+  batch runs with its own fresh bus, matching ``scope=1`` isolation.  Path
+  batches get isolated worktrees; line batches are exposed via
+  ``ctx.shared["input_lines"]``.
 
 Cancellation is checked at step boundaries.  Module return-value contract
 is ``PipelineContext | None | dict[str, ctx]``.
@@ -99,7 +101,6 @@ class PipelineExecutor:
             lines_text=lines_text,
             lines_file=lines_file,
         )
-        self._check_plan_compat(definition, plan)
 
         steps = self._prepare_steps(definition)
         copier = WorkingCopier(output_dir, direct_mode=direct_mode)
@@ -115,7 +116,7 @@ class PipelineExecutor:
             "executor",
             "message",
             f"start workflow: {definition.meta.name} "
-            f"(atom={definition.atom}, scope={definition.scope}, "
+            f"(scope={definition.scope}, "
             f"recurse={definition.recurse}, units={total}, direct={direct_mode})",
         )
         self._report_progress(0, total, None, "starting")
@@ -191,7 +192,6 @@ class PipelineExecutor:
             "errors": errors,
             "results": results,
             "workflow": definition.meta.name,
-            "atom": definition.atom,
             "scope": definition.scope,
             "output_dir": str(copier.output_dir),
         }
@@ -203,37 +203,6 @@ class PipelineExecutor:
         self._report_progress(completed, total, None, "cancelled" if cancelled else "done")
         return summary
 
-    # ------------------------------------------------------------------
-    # Step / compat checks
-    # ------------------------------------------------------------------
-
-    def _check_plan_compat(self, workflow: WorkflowDefinition, plan: InputPlan) -> None:
-        """Validate that the resolved input plan is compatible with workflow atom.
-
-        * atom="file"  accepts file or directory inputs; the recurse flag
-          controls whether dirs expand to file units or stay as folder units.
-        * atom="folder" accepts directory-only inputs; files are rejected.
-        * atom="line"  requires text-line inputs.
-        * atom="none"  requires no inputs.
-        """
-        if workflow.atom == "none":
-            if plan.atom != "none":
-                raise PipelineExecutionError("workflow atom='none' 不接受输入路径。")
-            return
-        if workflow.atom == "line":
-            if plan.atom != "line":
-                raise PipelineExecutionError("workflow atom='line' 不接受文件输入路径，请使用文本输入。")
-            return
-        # atom="file" or "folder": must have file/dir inputs
-        if plan.atom not in ("file", "folder"):
-            raise PipelineExecutionError(
-                f"workflow atom='{workflow.atom}' 需要文件/文件夹输入，当前输入类型为 '{plan.atom}'"
-            )
-        if workflow.atom == "folder":
-            for p in plan.files:
-                if not p.is_dir():
-                    raise PipelineExecutionError(f"workflow atom='folder' 仅接受文件夹输入，收到文件: {p}")
-
     def _prepare_steps(self, workflow: WorkflowDefinition) -> list[PreparedStep]:
         modules = self.module_manager.get_modules()
         prepared: list[PreparedStep] = []
@@ -241,16 +210,6 @@ class PipelineExecutor:
             definition = modules.get(step.module)
             if definition is None:
                 raise PipelineExecutionError(f"module not found: {step.module}")
-            if workflow.atom not in definition.atom:
-                raise PipelineExecutionError(
-                    f"step {idx} ('{step.module}') does not support atom "
-                    f"'{workflow.atom}' (supports: {', '.join(definition.atom)})"
-                )
-            if workflow.scope != definition.scope:
-                raise PipelineExecutionError(
-                    f"step {idx} ('{step.module}') does not support scope "
-                    f"'{workflow.scope}' (module requires: {definition.scope})"
-                )
             try:
                 params = normalize_config_params(definition.config_schema, step.params)
             except ConfigValidationError as exc:
@@ -284,12 +243,18 @@ class PipelineExecutor:
         shared: Mapping[str, Any] | None,
     ) -> list[dict[str, Any]]:
         if workflow.scope == 0:
-            if plan.atom == "none":
+            if plan.kind == "none":
                 return [{"path": None, "source_root": None}]
-            if plan.atom == "line":
-                return [{"line": "\n".join(plan.lines)}]
+            if plan.kind == "line":
+                return [{"lines": list(plan.lines)}]
             return [{"__shared_paths__": list(plan.files), "recurse": plan.recurse, "source_root": None}]
-        return units_from_plan(plan)
+        if workflow.scope == 1:
+            return units_from_plan(plan)
+        if plan.kind == "line":
+            return _build_line_batches(list(plan.lines), workflow.scope)
+        if plan.kind == "none":
+            return [{"path": None, "source_root": None}]
+        return _build_path_batches(units_from_plan(plan), workflow.scope)
 
     def _prepare_context(
         self,
@@ -306,12 +271,17 @@ class PipelineExecutor:
                 recurse=unit.get("recurse", plan.recurse),
                 shared=shared,
             )
-        if plan.atom == "line" or unit.get("line") is not None:
+        if "__batched_paths__" in unit:
+            return copier.prepare_batched_path_unit(
+                list(unit["__batched_paths__"]),
+                batch_index=int(unit.get("batch_index", 1)),
+                shared=shared,
+            )
+        if plan.kind == "line" or unit.get("line") is not None or unit.get("lines") is not None:
             return copier.prepare_line(unit, shared=shared)
-        if plan.atom == "none" or unit.get("path") is None:
+        if plan.kind == "none" or unit.get("path") is None:
             return copier.prepare_none(shared=shared)
-        ctx_atom = workflow.atom
-        return copier.prepare_path_unit(unit, atom=ctx_atom, shared=shared)
+        return copier.prepare_path_unit(unit, shared=shared)
 
     # ------------------------------------------------------------------
     # Unit execution
@@ -398,6 +368,7 @@ def execute_workflow(
     lines_file: str | Path | None = None,
     direct_mode: bool = False,
     modules_dir: str | Path = "modules",
+    workflows_dir: str | Path | None = None,
     log_file: str | Path | None = None,
     progress_callback: ProgressCallback | None = None,
     cancel_requested: CancelCallback | None = None,
@@ -421,7 +392,7 @@ def execute_workflow(
     )
     try:
         return executor.execute(
-            workflow,
+            _resolve_workflow_definition(workflow, workflows_dir=workflows_dir),
             output_dir=output_dir,
             files=files,
             recurse=recurse,
@@ -441,10 +412,13 @@ def execute_workflow(
 
 def _resolve_workflow_definition(
     workflow: WorkflowDefinition | Mapping[str, Any] | str | Path,
+    *,
+    workflows_dir: str | Path | None = None,
 ) -> WorkflowDefinition:
     if isinstance(workflow, WorkflowDefinition):
         return workflow
-    loader = WorkflowLoader(Path.cwd() / "workflows")
+    loader_root = Path(workflows_dir).resolve() if workflows_dir is not None else Path.cwd() / "workflows"
+    loader = WorkflowLoader(loader_root)
     if isinstance(workflow, Mapping):
         result = loader.validate_document(workflow)
         if not result.is_valid or result.workflow is None:
@@ -462,7 +436,32 @@ def _display_name(path: Path | str | None) -> str | None:
 
 
 def _unit_display(unit: dict[str, Any]) -> str | None:
+    lines = unit.get("lines")
+    if lines is not None:
+        return f"[lines x{len(lines)}]"
     line = unit.get("line")
     if line is not None:
         return f"[line] {line}"
+    batch_paths = unit.get("__batched_paths__")
+    if batch_paths is not None:
+        return f"[path batch x{len(batch_paths)}]"
+    shared_paths = unit.get("__shared_paths__")
+    if shared_paths is not None:
+        return f"[shared path x{len(shared_paths)}]"
     return _display_name(unit.get("path"))
+
+
+def _build_line_batches(lines: list[str], batch_size: int) -> list[dict[str, Any]]:
+    return [{"lines": lines[index : index + batch_size]} for index in range(0, len(lines), batch_size)]
+
+
+def _build_path_batches(units: list[dict[str, Any]], batch_size: int) -> list[dict[str, Any]]:
+    batches: list[dict[str, Any]] = []
+    for batch_index, index in enumerate(range(0, len(units), batch_size), start=1):
+        batches.append(
+            {
+                "__batched_paths__": units[index : index + batch_size],
+                "batch_index": batch_index,
+            }
+        )
+    return batches

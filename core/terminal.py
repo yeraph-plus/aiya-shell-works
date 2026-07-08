@@ -150,13 +150,13 @@ class TerminalSession:
             return self._run_subprocess_fallback(print_warning=True)
 
         self._backend = "winpty"
-        self._emit_started()
         try:
             self._process = PtyProcess.spawn(
                 self.cmd,
                 cwd=str(self.cwd) if self.cwd else None,
                 env=self.env,
             )
+            self._emit_started()
             while self._process.isalive():
                 try:
                     raw = self._process.read(4096)
@@ -165,8 +165,14 @@ class TerminalSession:
                 if raw:
                     self._consume_and_emit(raw)
             self._exit_code = self._process.wait()
-        except OSError as exc:
-            LOGGER.exception("winpty spawn failed: %s", exc)
+        except Exception as exc:
+            if self._process is None:
+                LOGGER.warning("winpty spawn failed, falling back to subprocess: %s", exc)
+                return self._run_subprocess_fallback(
+                    print_warning=True,
+                    warning_text=f"winpty 启动失败，回退到子进程模式（无交互 stdin）: {exc}",
+                )
+            LOGGER.exception("winpty runtime failed: %s", exc)
             self._exit_code = -127
             raise
         return TerminalResult(
@@ -231,18 +237,22 @@ class TerminalSession:
     # Subprocess fallback (e.g. headless / no winpty installed)
     # ------------------------------------------------------------------
 
-    def _run_subprocess_fallback(self, *, print_warning: bool = False) -> TerminalResult:
+    def _run_subprocess_fallback(
+        self,
+        *,
+        print_warning: bool = False,
+        warning_text: str | None = None,
+    ) -> TerminalResult:
         import subprocess
 
         if print_warning:
             self._runtime.log(
                 "terminal",
                 "warning",
-                "原生 PTY 不可用，回退到子进程模式（无交互 stdin）。",
+                warning_text or "原生 PTY 不可用，回退到子进程模式（无交互 stdin）。",
                 {"session_id": self.id, "command": " ".join(self.cmd)},
             )
         self._backend = "subprocess"
-        self._emit_started()
         try:
             proc = subprocess.Popen(
                 self.cmd,
@@ -256,6 +266,7 @@ class TerminalSession:
                 errors="replace",
             )
             self._process = proc
+            self._emit_started()
             if proc.stdout is not None:
                 for line in proc.stdout:
                     self._consume_and_emit(line)

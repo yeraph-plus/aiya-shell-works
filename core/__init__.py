@@ -9,7 +9,7 @@ from .config_schema import (
     normalize_config_params,
     validate_config_schema,
 )
-from .context import Atom, PipelineContext
+from .context import PipelineContext
 from .events import (
     EventBus,
     InMemorySink,
@@ -37,7 +37,6 @@ from .runtime import PipelineRuntime
 from .terminal import TerminalResult, TerminalSession, TerminalSessionRegistry, get_session
 from .tools import collect_file_targets, ensure_pty_available, parse_extension_set
 from .workflow_loader import (
-    VALID_ATOMS,
     VALID_SCOPES,
     WorkflowDefinition,
     WorkflowLoader,
@@ -51,7 +50,6 @@ CORE_VERSION = "2.0.0"
 
 __all__ = [
     "CORE_VERSION",
-    "Atom",
     "PipelineContext",
     "PipelineEvent",
     "PipelineEventType",
@@ -80,7 +78,6 @@ __all__ = [
     "WorkflowStep",
     "WorkflowSummary",
     "WorkflowValidationResult",
-    "VALID_ATOMS",
     "VALID_SCOPES",
     "WorkflowValidationError",
     "ModuleDefinition",

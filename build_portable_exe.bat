@@ -5,17 +5,19 @@ setlocal enabledelayedexpansion
 :: ============================================================================
 ::  Shell Worker Platform — Windows x64 Build Script
 ::
-::  Produces directly at project root (same level as main_cli.py):
-::    shell-worker-cli.exe   (console)
-::    shell-worker-gui.exe   (windowed)
-::    _internal\             (shared runtime, no duplication)
+::  Produces two self-contained single-file EXEs at project root:
+::    shell-worker.exe        (console / CLI, ~10 MB)
+::    shell-worker-gui.exe    (windowed / GUI + PySide6, ~46 MB)
+::
+::  One PyInstaller run builds both via shell-worker-portable.spec.
+::  No _internal/ directory, no COLLECT — each EXE is fully self-contained.
 ::
 ::  modules\ workflows\ resources\ are already at project root —
-::  they are external, not compiled, and share the parent dir with the exe.
+::  they are external and shared by both EXEs.
 ::
 ::  Prerequisites:
 ::    - Python 3.11+ on PATH
-::    - PyInstaller  (auto-installed if missing)
+::    - PyInstaller (auto-installed if missing)
 :: ============================================================================
 
 title Shell Worker — Build
@@ -33,7 +35,7 @@ cd /d "%PROJECT_ROOT%"
 :: ---- Ensure PyInstaller is available ----
 python -c "import PyInstaller" >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [1/4] Installing PyInstaller ...
+    echo [1/3] Installing PyInstaller ...
     pip install pyinstaller -q
     if %errorlevel% neq 0 (
         echo ERROR: Failed to install PyInstaller.
@@ -41,16 +43,16 @@ if %errorlevel% neq 0 (
         exit /b 1
     )
 ) else (
-    echo [1/4] PyInstaller OK.
+    echo [1/3] PyInstaller OK.
 )
 
-:: ---- Run PyInstaller with .spec ----
+:: ---- Run PyInstaller (one pass builds both EXEs) ----
 echo.
-echo [2/4] Building executables ...
+echo [2/3] Building executables ...
 echo        This may take a few minutes on first run.
 echo.
 
-call pyinstaller shell-worker-portable.spec --distpath "%PROJECT_ROOT%" --workpath "%PROJECT_ROOT%build" --clean --noconfirm
+call pyinstaller shell-worker-portable.spec --distpath "%PROJECT_ROOT%dist" --workpath "%PROJECT_ROOT%build" --noconfirm
 if %errorlevel% neq 0 (
     echo.
     echo ERROR: PyInstaller build failed.
@@ -58,44 +60,35 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: ---- Flatten output to project root ----
+:: ---- Deploy EXEs to project root ----
 echo.
-echo [3/4] Flattening to project root ...
+echo [3/3] Deploying to project root ...
 
-set "STAGE_DIR=%PROJECT_ROOT%shell-worker"
+set "DIST=%PROJECT_ROOT%dist"
 
-if exist "%STAGE_DIR%\shell-worker-cli.exe" (
-    move /y "%STAGE_DIR%\shell-worker-cli.exe" "%PROJECT_ROOT%\" >nul
-    echo        shell-worker-cli.exe
+if exist "%DIST%\shell-worker.exe" (
+    move /y "%DIST%\shell-worker.exe" "%PROJECT_ROOT%\" >nul
+    echo        shell-worker.exe
 )
-if exist "%STAGE_DIR%\shell-worker-gui.exe" (
-    move /y "%STAGE_DIR%\shell-worker-gui.exe" "%PROJECT_ROOT%\" >nul
+if exist "%DIST%\shell-worker-gui.exe" (
+    move /y "%DIST%\shell-worker-gui.exe" "%PROJECT_ROOT%\" >nul
     echo        shell-worker-gui.exe
 )
-if exist "%STAGE_DIR%\_internal" (
-    if exist "%PROJECT_ROOT%\_internal" (
-        rmdir /s /q "%PROJECT_ROOT%\_internal" >nul 2>&1
-    )
-    move /y "%STAGE_DIR%\_internal" "%PROJECT_ROOT%\"
-    echo        _internal\
-)
 
-rmdir /s /q "%STAGE_DIR%" >nul 2>&1
+:: ---- Cleanup ----
+if exist "%DIST%" rmdir /s /q "%DIST%" >nul 2>&1
+if exist "%PROJECT_ROOT%build" rmdir /s /q "%PROJECT_ROOT%build" >nul 2>&1
 
 :: ---- Done ----
 echo.
-echo [4/4] Build complete.
-echo.
 echo ========================================
+echo   Build complete
 echo   Output: %PROJECT_ROOT%
 echo ========================================
-echo   shell-worker-cli.exe    (console)
+echo   shell-worker.exe        (console / CLI)
 echo   shell-worker-gui.exe    (windowed / PySide6)
-echo   _internal\              (shared runtime)
+echo   modules\ workflows\     (external)
 echo ========================================
 echo.
-
-:: Clean up build temp
-rmdir /s /q "%PROJECT_ROOT%build" >nul 2>&1
 
 pause

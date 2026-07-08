@@ -1,14 +1,18 @@
 """Input plan resolution: turn CLI inputs into a unit-ready description.
 
-This module decides ``atom`` by input source and preserves raw paths so the
-executor can honor ``recurse`` during unit construction.
+The kernel derives its execution shape from the actual inputs (no YAML
+``atom`` constraint):
 
-Resolution rules:
+1. ``files`` non-empty → path inputs.  ``recurse`` decides whether dir
+   inputs expand to contained files (preserving ``source_root``) or stay
+   as whole-folder units.
+2. ``files`` empty, ``lines_text``/``lines_file`` supplied → line inputs.
+3. All empty → a single empty unit (no input).
 
-1. ``files`` non-empty → ``atom=file``.  ``recurse=false`` dirs become
-   whole-folder units at unit-build time; the atom stays ``"file"``.
-2. ``files`` empty, ``lines_text``/``lines_file`` supplied → ``atom=line``
-3. All empty → ``atom=none`` (single empty unit)
+The internal ``InputPlan.kind`` is one of ``"path"`` / ``"line"`` / ``"none"``
+and is consumed only by the executor / WorkingCopier to build units.  It is
+NOT exposed to modules as a hard constraint — modules read ``ctx.is_file`` /
+``ctx.is_dir`` / ``ctx.shared["input_line"]`` instead.
 """
 
 from __future__ import annotations
@@ -16,18 +20,21 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
 from .exceptions import PipelineExecutionError
 
-Atom = Literal["file", "folder", "line", "none"]
+_PLAN_KINDS = ("path", "line", "none")
 
 
 @dataclass(frozen=True, slots=True)
 class InputPlan:
-    """The outcome of CLI / GUI input resolution."""
+    """The outcome of CLI / GUI input resolution.
 
-    atom: Atom
+    ``kind`` is an internal kernel hint for unit construction; not exported
+    as a module-facing constraint.
+    """
+
+    kind: str
     recurse: bool = False
     files: tuple[Path, ...] = field(default_factory=tuple)
     lines: tuple[str, ...] = field(default_factory=tuple)
@@ -62,11 +69,7 @@ def resolve_input(
         for p in raw_files:
             if not p.exists():
                 raise PipelineExecutionError(f"--files 指定的路径不存在: {p}")
-        has_file = any(p.is_file() for p in raw_files)
-        has_dir = any(p.is_dir() for p in raw_files)
-        if has_dir and has_file and not recurse:
-            raise PipelineExecutionError("混合文件与文件夹输入时必须启用 --recurse（仅展开文件）以避免 atom 不一致。")
-        return InputPlan(atom="file", recurse=recurse, files=tuple(raw_files))
+        return InputPlan(kind="path", recurse=recurse, files=tuple(raw_files))
 
     lines: list[str] = []
     if lines_text is not None:
@@ -78,6 +81,6 @@ def resolve_input(
             lines = _read_lines_file(lines_file)
 
     if lines:
-        return InputPlan(atom="line", lines=tuple(lines))
+        return InputPlan(kind="line", lines=tuple(lines))
 
-    return InputPlan(atom="none")
+    return InputPlan(kind="none")

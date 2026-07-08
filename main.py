@@ -95,8 +95,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if candidate.exists():
             workflow_arg = candidate
 
+    runtime = PipelineRuntime(log_file=args.log_file)
     try:
-        runtime = PipelineRuntime(log_file=args.log_file)
         module_manager = ModuleManager(modules_dir)
         executor = PipelineExecutor(module_manager, runtime=runtime)
 
@@ -109,7 +109,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             lines_file=args.lines_file,
             direct_mode=args.direct,
         )
-        runtime.close()
     except (WorkflowValidationError, PipelineExecutionError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 3
@@ -120,6 +119,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         logging.exception("unhandled")
         print(f"error: {exc}", file=sys.stderr)
         return 4
+    finally:
+        runtime.close()
 
     if summary.get("cancelled"):
         return 2
@@ -135,7 +136,8 @@ def _list_workflows(loader: WorkflowLoader) -> None:
     print(f"workflows ({len(summaries)}):")
     for s in summaries:
         if s.is_valid:
-            print(f"  {s.filename}  atom={s.atom} scope={s.scope} steps={s.step_count}  - {s.name}")
+            atom_label = s.atom or "auto"
+            print(f"  {s.filename}  atom={atom_label} scope={s.scope} steps={s.step_count}  - {s.name}")
         else:
             print(f"  [invalid] {s.filename}  - {'; '.join(s.errors)}")
 
@@ -144,7 +146,8 @@ def _list_modules(manager: ModuleManager) -> None:
     modules = manager.scan_modules()
     print(f"modules ({len(modules)}):")
     for slug, d in sorted(modules.items()):
-        print(f"  {slug}  atom={list(d.atom)} scope={d.scope} tags={list(d.tags)}")
+        kind = "path" if d.is_file_module else "line/none"
+        print(f"  {slug}  kind={kind} scope={d.scope} tags={list(d.tags)}")
     for w in manager.warnings:
         print(f"  [warn] {w}")
 

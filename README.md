@@ -32,35 +32,35 @@ Linux / macOS 上 CLI 零 GUI 依赖，PTY 由 stdlib 提供。
 
 ```bash
 # 1. 查看可用工作流和模块
-python main_cli.py --list-workflows
-python main_cli.py --list-modules
+python main.py --list-workflows
+python main.py --list-modules
 
 # 2. 无输入创建文件（atom=none）
-python main_cli.py example-create.yaml --output-dir ./out
+python main.py example-create.yaml --output-dir ./out
 # → out/hello.txt
 
 # 3. 批量重命名文件（atom=file, recurse=true）
-python main_cli.py example-file-rename.yaml \
+python main.py example-file-rename.yaml \
   --files ./my_data --recurse --output-dir ./out
 # → 每个文件被安全拷贝后重命名，保留相对目录结构
 
 # 4. 整个文件夹作为单元（atom=folder）
-python main_cli.py example-folder-rename.yaml \
+python main.py example-folder-rename.yaml \
   --files ./my_folder --output-dir ./out
 # → 文件夹整体作为一个任务，拷贝后重命名
 
 # 5. 合并计数（atom=file, scope=0）
-python main_cli.py example-cycle-count.yaml \
+python main.py example-cycle-count.yaml \
   --files ./my_data --recurse --output-dir ./out
 # → 所有文件合并到产物目录，运行一次，输出 count.txt
 
 # 6. 逐行处理文本（atom=line）
-python main_cli.py example-line-echo.yaml \
+python main.py example-line-echo.yaml \
   --lines "alpha"$'\n'"beta" --output-dir ./out
 # → 每行作为一个独立任务
 
 # 7. 调用外部工具
-python main_cli.py example-external-tool.yaml \
+python main.py example-external-tool.yaml \
   --files ./input --recurse --output-dir ./out
 ```
 
