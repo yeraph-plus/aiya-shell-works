@@ -5,7 +5,11 @@ from __future__ import annotations
 import ctypes
 import platform
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from core.context import PipelineContext
+    from core.runtime import PipelineRuntime
 
 MODULE_META = {
     "slug": "strip-attributes",
@@ -55,7 +59,7 @@ def _set_attrs(path: str, attrs: int) -> bool:
         return False
 
 
-def _collect_targets(ctx: Any) -> list[Path]:
+def _collect_targets(ctx: PipelineContext) -> list[Path]:
     wp = Path(ctx.working_path)
     if ctx.atom == "file":
         return [wp] if wp.is_file() else []
@@ -64,7 +68,7 @@ def _collect_targets(ctx: Any) -> list[Path]:
     return []
 
 
-def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
+def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
     if platform.system() != "Windows":
         runtime.log("strip-attributes", "hint", "当前系统非 Windows，跳过属性清除。")
         return ctx

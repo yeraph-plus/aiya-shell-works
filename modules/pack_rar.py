@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from core.context import PipelineContext
+    from core.runtime import PipelineRuntime
 
 MODULE_META = {
     "slug": "pack-rar",
@@ -90,7 +94,7 @@ def _build_command(cfg: dict, rar_exe: str, archive_path: Path, source_path: Pat
     return cmd
 
 
-def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
+def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
     rar_exe = cfg.get("winrar_path", "").strip()
     if not rar_exe:
         runtime.log("pack-rar", "error", "未配置 WinRAR 路径，请在工作流中指定 rar.exe 的完整路径。")

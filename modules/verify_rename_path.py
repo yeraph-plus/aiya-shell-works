@@ -9,7 +9,11 @@ used to keep the downstream steps pointed at the new path.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from core.context import PipelineContext
+    from core.runtime import PipelineRuntime
 
 MODULE_META = {
     "slug": "verify-rename-path",
@@ -29,7 +33,7 @@ CONFIG_SCHEMA = {
 }
 
 
-def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
+def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
     src = Path(ctx.working_path)
     new = src.with_name(f"{cfg.get('prefix', '')}{src.name}{cfg.get('suffix', '')}")
     if src == new:

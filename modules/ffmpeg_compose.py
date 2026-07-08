@@ -7,7 +7,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from core.context import PipelineContext
+    from core.runtime import PipelineRuntime
 
 MODULE_META = {
     "slug": "ffmpeg-compose",
@@ -103,7 +107,7 @@ _VIDEO_EXTENSIONS = frozenset(
 )
 
 
-def _resolve_ffmpeg_path(cfg: dict) -> str | None:
+def _resolve_ffmpeg_path(cfg: dict[str, Any]) -> str | None:
     custom = cfg.get("ffmpeg_path", "").strip()
     if custom:
         p = Path(custom)
@@ -156,7 +160,7 @@ def _find_sequence_pattern(directory: Path) -> tuple[str, str] | None:
     return ("", pattern)
 
 
-def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
+def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
     working_path = Path(ctx.working_path)
     output_dir = Path(ctx.output_dir)
 

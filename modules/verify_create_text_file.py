@@ -8,7 +8,11 @@ unit, no input needed).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from core.context import PipelineContext
+    from core.runtime import PipelineRuntime
 
 MODULE_META = {
     "slug": "verify-create-text-file",
@@ -29,7 +33,7 @@ CONFIG_SCHEMA = {
 }
 
 
-def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
+def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
     target = Path(ctx.output_dir) / cfg["filename"]
     target.write_text(cfg["content"], encoding="utf-8")
     runtime.log("verify-create-text-file", "success", f"已生成 {target.name}", {"path": str(target)})

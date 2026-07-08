@@ -26,6 +26,7 @@ dev = [
     "pytest>=8.0,<9.0",
     "pytest-cov>=5.0,<6.0",
     "ruff>=0.8,<1.0",
+    "mypy>=1.0,<3.0",
 ]
 
 [project.scripts]
@@ -79,3 +80,13 @@ line-ending = "auto"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-q"
+
+[tool.mypy]
+python_version = "3.11"
+files = ["core/", "modules/", "main_cli.py"]
+ignore_missing_imports = true
+check_untyped_defs = false
+disallow_untyped_defs = false
+warn_return_any = false
+warn_unused_ignores = false
+exclude = ["gui/", "tests/", "scripts/"]

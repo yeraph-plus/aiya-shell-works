@@ -31,6 +31,7 @@ from typing import Any
 
 import yaml
 
+from .context import Atom
 from .exceptions import WorkflowValidationError
 
 WORKFLOW_SUFFIXES = (".yaml", ".yml")
@@ -77,7 +78,7 @@ class WorkflowStep:
 @dataclass(frozen=True)
 class WorkflowDefinition:
     meta: WorkflowMeta
-    atom: str
+    atom: Atom
     scope: int
     steps: tuple[WorkflowStep, ...]
     recurse: bool = False

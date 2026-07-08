@@ -13,3 +13,6 @@ pytest-cov>=5.0,<6.0
 
 # Lint
 ruff>=0.8,<1.0
+
+# Type check
+mypy>=1.0,<3.0

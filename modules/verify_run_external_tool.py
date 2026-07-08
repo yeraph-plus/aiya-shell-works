@@ -14,7 +14,11 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from core.context import PipelineContext
+    from core.runtime import PipelineRuntime
 
 MODULE_META = {
     "slug": "verify-run-external-tool",
@@ -47,7 +51,7 @@ def _default_tool_path(project_dir: Path) -> Path:
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
+def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
     raw = (cfg.get("mock_tool_path") or "").strip()
     if raw:
         tool = Path(raw)

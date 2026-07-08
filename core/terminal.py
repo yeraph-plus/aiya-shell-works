@@ -37,6 +37,7 @@ class TerminalResult:
     """Outcome of an external command execution."""
 
     exit_code: int
+    output_text: str = ""
 
     @property
     def is_success(self) -> bool:
@@ -116,6 +117,7 @@ class TerminalSession:
         self._process: Any = None
         self._buf = ""
         self._pattern_matched = False
+        self._output_text = ""
 
         # Winpty handle / subprocess handle live on the chosen backend.
         self._backend: str = "auto"
@@ -167,7 +169,10 @@ class TerminalSession:
             LOGGER.exception("winpty spawn failed: %s", exc)
             self._exit_code = -127
             raise
-        return TerminalResult(exit_code=self._exit_code if self._exit_code is not None else -1)
+        return TerminalResult(
+            exit_code=self._exit_code if self._exit_code is not None else -1,
+            output_text=self._output_text,
+        )
 
     # ------------------------------------------------------------------
     # Posix pty backend
@@ -217,7 +222,10 @@ class TerminalSession:
                 os.close(fd)
             except OSError:
                 pass
-        return TerminalResult(exit_code=self._exit_code if self._exit_code is not None else -1)
+        return TerminalResult(
+            exit_code=self._exit_code if self._exit_code is not None else -1,
+            output_text=self._output_text,
+        )
 
     # ------------------------------------------------------------------
     # Subprocess fallback (e.g. headless / no winpty installed)
@@ -256,7 +264,10 @@ class TerminalSession:
             LOGGER.exception("subprocess fallback failed: %s", exc)
             self._exit_code = -127
             raise
-        return TerminalResult(exit_code=self._exit_code if self._exit_code is not None else -1)
+        return TerminalResult(
+            exit_code=self._exit_code if self._exit_code is not None else -1,
+            output_text=self._output_text,
+        )
 
     # ------------------------------------------------------------------
     # Streaming helpers
@@ -266,6 +277,7 @@ class TerminalSession:
         clean = _ANSI_STRIP_RE.sub("", raw)
         if not clean:
             return
+        self._output_text += clean
         self._runtime.log(
             "terminal",
             "message",

@@ -7,7 +7,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from core.context import PipelineContext
+    from core.runtime import PipelineRuntime
 
 MODULE_META = {
     "slug": "vs-frame-interpolate",
@@ -198,7 +202,7 @@ def _generate_vpy_script(
     Path(script_path).write_text(script_content, encoding="utf-8")
 
 
-def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
+def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
     working_path = Path(ctx.working_path)
     output_dir = Path(ctx.output_dir)
 

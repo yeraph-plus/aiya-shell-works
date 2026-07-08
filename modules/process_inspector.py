@@ -11,7 +11,11 @@ import platform
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from core.context import PipelineContext
+    from core.runtime import PipelineRuntime
 
 from core.tools import collect_file_targets
 
@@ -231,15 +235,15 @@ else:
 # ---------------------------------------------------------------------------
 # Unix lock detection + process discovery (lsof)
 # ---------------------------------------------------------------------------
-def _find_locked_unix(path: Path, runtime: Any) -> list[int]:
+def _find_locked_unix(path: Path, runtime: PipelineRuntime) -> list[int]:
     """Return PIDs of processes that hold a lock on *path* (empty = not locked)."""
     result = runtime.spawn(["lsof", "-F", "p", "-t", "--", str(path)])
     if not result.is_success:
-        if "command not found" in result.stderr.lower() or "not found" in result.stderr.lower():
+        if "command not found" in result.output_text.lower() or "not found" in result.output_text.lower():
             raise RuntimeError("lsof 不可用，请安装 lsof: apt install lsof / brew install lsof")
         return []
     pids: list[int] = []
-    for line in result.stdout.strip().splitlines():
+    for line in result.output_text.strip().splitlines():
         line = line.strip()
         if line.startswith("p"):
             try:
@@ -254,7 +258,7 @@ def _find_locked_unix(path: Path, runtime: Any) -> list[int]:
     return pids
 
 
-def _kill_pid_unix(pid: int, runtime: Any) -> bool:
+def _kill_pid_unix(pid: int, runtime: PipelineRuntime) -> bool:
     result = runtime.spawn(["kill", str(pid)])
     return result.is_success
 
@@ -281,7 +285,7 @@ def _kill_pid_win(pid: int, name: str) -> bool:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
+def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
     is_windows = platform.system() == "Windows"
     action: str = cfg.get("action", "detect")
     max_retries: int = cfg.get("max_retries", 2)
@@ -317,7 +321,9 @@ def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
 
     freed_str: list[str] = []
 
-    runtime.log("process-inspector", "info", f"检测完成: {len(free_str)} 空闲, {len(locked_str)} 被锁定 (共 {total})")
+    runtime.log(
+        "process-inspector", "message", f"检测完成: {len(free_str)} 空闲, {len(locked_str)} 被锁定 (共 {total})"
+    )  # noqa: E501
 
     if action == "detect":
         ctx.shared["file_lock_status"] = {"locked": locked_str, "free": free_str, "freed": []}

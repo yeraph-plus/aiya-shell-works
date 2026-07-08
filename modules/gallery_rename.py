@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from core.context import PipelineContext
+    from core.runtime import PipelineRuntime
 
 MODULE_META = {
     "slug": "gallery-rename",
@@ -47,7 +51,7 @@ def _natural_sort_key(name: str) -> list:
     return [int(p) if p.isdigit() else p.lower() for p in parts]
 
 
-def _collect_targets(ctx: Any) -> list[Path]:
+def _collect_targets(ctx: PipelineContext) -> list[Path]:
     wp = Path(ctx.working_path)
     if not wp.is_dir():
         return []
@@ -57,7 +61,7 @@ def _collect_targets(ctx: Any) -> list[Path]:
     )
 
 
-def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
+def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
     working_dir = Path(ctx.working_path)
     if not working_dir.is_dir():
         runtime.log("gallery-rename", "error", "working_path 不是目录。")

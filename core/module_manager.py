@@ -18,6 +18,7 @@ from types import ModuleType
 from typing import Any
 
 from .config_schema import validate_config_schema
+from .context import PipelineContext
 
 LOGGER = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ class ModuleDefinition:
     slug: str
     module_meta: dict[str, Any]
     config_schema: dict[str, Any]
-    run: Callable[..., Any]
+    run: Callable[..., PipelineContext | None]
     path: Path
     module: ModuleType
     core_version: str = "2.0.0"

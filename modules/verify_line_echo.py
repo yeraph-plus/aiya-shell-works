@@ -9,7 +9,11 @@ avoid collisions in ``output_dir``.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from core.context import PipelineContext
+    from core.runtime import PipelineRuntime
 
 MODULE_META = {
     "slug": "verify-line-echo",
@@ -29,7 +33,7 @@ CONFIG_SCHEMA = {
 }
 
 
-def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
+def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
     line = ctx.shared.get("input_line", "")
     ident = f"{abs(hash(line)) & 0xFFFF:04x}"
     filename = f"{cfg['prefix']}_{ident}{cfg['extension']}"

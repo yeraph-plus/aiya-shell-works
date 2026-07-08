@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from core.context import PipelineContext
+    from core.runtime import PipelineRuntime
 
 MODULE_META = {
     "slug": "exiftool-clean",
@@ -85,7 +89,7 @@ _SUPPORTED_EXTENSIONS = frozenset(
 )
 
 
-def _resolve_exiftool_path(cfg: dict) -> str | None:
+def _resolve_exiftool_path(cfg: dict[str, Any]) -> str | None:
     custom = cfg.get("exiftool_path", "").strip()
     if custom:
         p = Path(custom)
@@ -110,7 +114,7 @@ def _resolve_exiftool_path(cfg: dict) -> str | None:
     return None
 
 
-def _collect_targets(ctx: Any, cfg: dict) -> list[Path]:
+def _collect_targets(ctx: PipelineContext, cfg: dict[str, Any]) -> list[Path]:
     wp = Path(ctx.working_path)
     if ctx.atom == "file":
         return [wp] if wp.is_file() and wp.suffix.lower() in _SUPPORTED_EXTENSIONS else []
@@ -121,7 +125,7 @@ def _collect_targets(ctx: Any, cfg: dict) -> list[Path]:
     return []
 
 
-def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
+def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
     targets = _collect_targets(ctx, cfg)
     if not targets:
         runtime.log("exiftool-clean", "message", "未发现支持格式的文件，跳过。")

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from core.context import PipelineContext
+    from core.runtime import PipelineRuntime
 
 MODULE_META = {
     "slug": "gallery-count",
@@ -33,7 +37,7 @@ CONFIG_SCHEMA = {
 }
 
 
-def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
+def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
     working_dir = Path(ctx.working_path)
     if not working_dir.is_dir():
         runtime.log("gallery-count", "error", "working_path 不是目录。")

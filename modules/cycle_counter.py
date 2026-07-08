@@ -9,7 +9,11 @@ accumulation hack is needed — the executor hands us a single ctx already.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from core.context import PipelineContext
+    from core.runtime import PipelineRuntime
 
 MODULE_META = {
     "slug": "cycle-counter",
@@ -29,7 +33,7 @@ CONFIG_SCHEMA = {
 }
 
 
-def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
+def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
     files = sorted(p for p in Path(ctx.working_path).rglob("*") if p.is_file())
     for i, fp in enumerate(files, 1):
         runtime.log("cycle-counter", "success", f"{i}: {fp.name}", {"index": i, "path": str(fp)})

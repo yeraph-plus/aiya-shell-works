@@ -18,6 +18,7 @@ becomes ``output_dir`` itself — a single batch task over a merged tree.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from shutil import copy2, copytree
 from typing import Any
@@ -84,7 +85,7 @@ class WorkingCopier:
     # Public entry points
     # ------------------------------------------------------------------
 
-    def prepare_none(self, *, shared: dict[str, Any] | None = None) -> PipelineContext:
+    def prepare_none(self, *, shared: Mapping[str, Any] | None = None) -> PipelineContext:
         return PipelineContext(
             original_input=None,
             working_path=self.output_dir,
@@ -93,7 +94,7 @@ class WorkingCopier:
             shared=dict(shared or {}),
         )
 
-    def prepare_line(self, unit: dict[str, Any], *, shared: dict[str, Any] | None = None) -> PipelineContext:
+    def prepare_line(self, unit: dict[str, Any], *, shared: Mapping[str, Any] | None = None) -> PipelineContext:
         line = str(unit["line"])
         return PipelineContext(
             original_input=None,
@@ -108,8 +109,10 @@ class WorkingCopier:
         unit: dict[str, Any],
         *,
         atom: str,
-        shared: dict[str, Any] | None = None,
+        shared: Mapping[str, Any] | None = None,
     ) -> PipelineContext:
+        # atom flows from validated WorkflowDefinition → guaranteed to be
+        # a valid Atom literal at runtime despite the annotation.
         source = Path(unit["path"])
         source_root = Path(unit["source_root"]) if unit.get("source_root") else None
 
@@ -142,7 +145,7 @@ class WorkingCopier:
         paths: list[Path],
         *,
         recurse: bool,
-        shared: dict[str, Any] | None = None,
+        shared: Mapping[str, Any] | None = None,
     ) -> PipelineContext:
         """Combine all path inputs into a single unit rooted at output_dir."""
 

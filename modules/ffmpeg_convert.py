@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from core.context import PipelineContext
+    from core.runtime import PipelineRuntime
 
 MODULE_META = {
     "slug": "ffmpeg-convert",
@@ -245,7 +249,7 @@ def _resolve_ffmpeg_path(cfg: dict) -> str | None:
     return None
 
 
-def _collect_targets(ctx: Any) -> list[Path]:
+def _collect_targets(ctx: PipelineContext) -> list[Path]:
     wp = Path(ctx.working_path)
     if ctx.atom == "file":
         return [wp] if wp.is_file() and wp.suffix.lower() in _SUPPORTED_EXTENSIONS else []
@@ -329,7 +333,7 @@ def _build_command(
     return cmd
 
 
-def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
+def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
     targets = _collect_targets(ctx)
     if not targets:
         runtime.log("ffmpeg-convert", "message", "未发现支持的媒体文件，跳过。")

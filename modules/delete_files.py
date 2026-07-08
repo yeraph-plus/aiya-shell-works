@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import fnmatch
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from core.context import PipelineContext
+    from core.runtime import PipelineRuntime
 
 MODULE_META = {
     "slug": "delete-files",
@@ -32,7 +36,7 @@ def _parse_patterns(patterns_str: str) -> list[str]:
     return [p.strip() for p in patterns_str.split() if p.strip()]
 
 
-def _collect_targets(ctx: Any) -> list[Path]:
+def _collect_targets(ctx: PipelineContext) -> list[Path]:
     wp = Path(ctx.working_path)
     if ctx.atom == "file":
         return [wp] if wp.is_file() else []
@@ -41,7 +45,7 @@ def _collect_targets(ctx: Any) -> list[Path]:
     return []
 
 
-def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
+def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
     patterns_str = cfg.get("patterns", "")
     patterns = _parse_patterns(patterns_str)
 

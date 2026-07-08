@@ -30,6 +30,8 @@ _VALID_CLONE_FIELDS: frozenset[str] = frozenset(
         "shared",
         "extra_files",
         "source_root",
+        # is_file/is_dir are included for structural completeness but are
+        # unconditionally overwritten by __post_init__ — caller values ignored.
         "is_file",
         "is_dir",
     }

@@ -5,7 +5,11 @@ from __future__ import annotations
 import re
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from core.context import PipelineContext
+    from core.runtime import PipelineRuntime
 
 MODULE_META = {
     "slug": "ffmpeg-merge",
@@ -163,7 +167,7 @@ def _resolve_ffmpeg_path(cfg: dict) -> str | None:
     return None
 
 
-def _resolve_input(ctx: Any) -> str | None:
+def _resolve_input(ctx: PipelineContext) -> str | None:
     if ctx.atom == "line":
         line = ctx.shared.get("input_line", "").strip()
         return line if line else None
@@ -308,7 +312,7 @@ def _build_command(
     return cmd
 
 
-def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
+def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
     source = _resolve_input(ctx)
     if not source:
         runtime.log("ffmpeg-merge", "message", "无输入源，跳过。")
