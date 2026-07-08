@@ -15,7 +15,7 @@ _internal/
 
 # Resources: track install scripts / mock_tool at root; ignore all downloaded binary subdirs
 resources/*/
-
+workflows/*/
 # Editor
 .vscode/
 .idea/
