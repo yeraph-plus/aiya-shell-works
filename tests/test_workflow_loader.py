@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 import pytest
 
 from core import WorkflowDefinition, WorkflowLoader, WorkflowMeta, WorkflowStep
-from core.exceptions import WorkflowValidationError
 
 
 @pytest.fixture()
@@ -45,7 +45,8 @@ def test_validate_legacy_mode_rejected(loader: WorkflowLoader) -> None:
 def test_validate_legacy_batch_rejected(loader: WorkflowLoader) -> None:
     doc = {
         "meta": {"name": "X"},
-        "atom": "file", "scope": 1,
+        "atom": "file",
+        "scope": 1,
         "batch": 1,
         "steps": [],
     }
@@ -57,7 +58,8 @@ def test_validate_legacy_batch_rejected(loader: WorkflowLoader) -> None:
 def test_validate_legacy_batch_scope_rejected(loader: WorkflowLoader) -> None:
     doc = {
         "meta": {"name": "X"},
-        "atom": "file", "scope": 1,
+        "atom": "file",
+        "scope": 1,
         "batch_scope": "shared",
         "steps": [],
     }
@@ -125,15 +127,19 @@ def test_list_workflows_includes_invalid_flag(tmp_path: Path) -> None:
     ldr = WorkflowLoader(tmp_path / "workflows")
     ldr.ensure_workflows_dir()
     # Valid file:
-    ldr.save(WorkflowDefinition(
-        meta=WorkflowMeta(name="A"),
-        atom="file", scope=1,
-        steps=(),
-    ), "a.yaml")
+    ldr.save(
+        WorkflowDefinition(
+            meta=WorkflowMeta(name="A"),
+            atom="file",
+            scope=1,
+            steps=(),
+        ),
+        "a.yaml",
+    )
     # Invalid YAML:
     (tmp_path / "workflows" / "bad.yaml").write_text(
-        "meta:\n  name: Bad\natom: bogus\nscope: x\nsteps: []\n",
-        encoding="utf-8")
+        "meta:\n  name: Bad\natom: bogus\nscope: x\nsteps: []\n", encoding="utf-8"
+    )
     summaries = ldr.list_workflows(include_invalid=True)
     valid = [s for s in summaries if s.is_valid]
     invalid = [s for s in summaries if not s.is_valid]
@@ -145,7 +151,9 @@ def test_list_workflows_includes_invalid_flag(tmp_path: Path) -> None:
 def test_validate_document_accepts_definition(loader: WorkflowLoader) -> None:
     wf = WorkflowDefinition(
         meta=WorkflowMeta(name="A", description="d"),
-        atom="none", scope=1, steps=(),
+        atom="none",
+        scope=1,
+        steps=(),
     )
     result = loader.validate_document(wf)
     assert result.is_valid

@@ -172,9 +172,7 @@ class DynamicParameterForm(QWidget):
             if field.placeholder:
                 line_edit.setPlaceholderText(field.placeholder)
             button = QPushButton("浏览")
-            button.clicked.connect(
-                lambda: self._choose_path(field.field_type, line_edit)
-            )
+            button.clicked.connect(lambda: self._choose_path(field.field_type, line_edit))
             line_edit.textChanged.connect(self._emit_values)
             layout.addWidget(line_edit, stretch=1)
             layout.addWidget(button)

@@ -78,10 +78,22 @@ CONFIG_SCHEMA = {
     },
 }
 
-_VIDEO_EXTENSIONS = frozenset({
-    ".mp4", ".mkv", ".avi", ".mov", ".webm", ".ts",
-    ".m4v", ".flv", ".wmv", ".m2ts", ".vob", ".y4m",
-})
+_VIDEO_EXTENSIONS = frozenset(
+    {
+        ".mp4",
+        ".mkv",
+        ".avi",
+        ".mov",
+        ".webm",
+        ".ts",
+        ".m4v",
+        ".flv",
+        ".wmv",
+        ".m2ts",
+        ".vob",
+        ".y4m",
+    }
+)
 
 
 def _resolve_vspipe_path(cfg: dict) -> str | None:
@@ -149,29 +161,27 @@ def _generate_vpy_script(
     factor_map = {"2x": 1, "4x": 2, "8x": 3}
     model_idx = factor_map.get(factor, 1)
     gpu_id = 0 if gpu else -1
-    model_file = f"{model_name}.onnx"
-    model_full = f"{model_dir.replace(chr(92), '/')}/{model_file}"
 
     lines = []
     lines.append("import vapoursynth as vs")
     lines.append("from vapoursynth import core")
     lines.append("")
-    lines.append(f"core.std.LoadPlugin(r\"{plugin_escaped}\")")
+    lines.append(f'core.std.LoadPlugin(r"{plugin_escaped}")')
     lines.append("")
 
     if is_frame_sequence:
-        lines.append(f"src = core.imwri.Read(r\"{input_escaped}\\\\%06d.*\")")
+        lines.append(f'src = core.imwri.Read(r"{input_escaped}\\\\%06d.*")')
     else:
-        lines.append(f"src = core.ffms2.Source(r\"{input_escaped}\")")
+        lines.append(f'src = core.ffms2.Source(r"{input_escaped}")')
     lines.append("")
 
     if gpu:
         lines.append(f"# RIFE 补帧: {factor} ({model_name})")
-        lines.append(f"src = core.resize.Bicubic(src, format=vs.RGBS)")
+        lines.append("src = core.resize.Bicubic(src, format=vs.RGBS)")
         lines.append(f"interp = core.mlrt.RIFE(src, model={model_idx}, gpu_id={gpu_id})")
     else:
         lines.append(f"# RIFE 补帧 (CPU): {factor} ({model_name})")
-        lines.append(f"src = core.resize.Bicubic(src, format=vs.RGBS)")
+        lines.append("src = core.resize.Bicubic(src, format=vs.RGBS)")
         lines.append(f"interp = core.mlrt.RIFE(src, model={model_idx}, gpu_id=-1)")
 
     lines.append("")
@@ -179,8 +189,8 @@ def _generate_vpy_script(
     if output_format in ("png-sequence", "jpg-sequence"):
         fmt = "PNG" if output_format == "png-sequence" else "JPEG"
         subfolder = f"{stem}_interp_frames"
-        lines.append(f"# 输出帧序列到子文件夹")
-        lines.append(f"interp = core.imwri.Write(interp, \"{fmt}\", r\"{output_escaped}\\\\{subfolder}\\\\%06d.png\")")
+        lines.append("# 输出帧序列到子文件夹")
+        lines.append(f'interp = core.imwri.Write(interp, "{fmt}", r"{output_escaped}\\\\{subfolder}\\\\%06d.png")')
 
     lines.append("interp.set_output()")
 
@@ -188,19 +198,21 @@ def _generate_vpy_script(
     Path(script_path).write_text(script_content, encoding="utf-8")
 
 
-def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     working_path = Path(ctx.working_path)
     output_dir = Path(ctx.output_dir)
 
     if working_path.is_dir():
         runtime.log(
-            "vs-frame-interpolate", "message",
+            "vs-frame-interpolate",
+            "message",
             "输入为目录 (帧序列)，使用 imwri.Read 读取。",
         )
     elif working_path.is_file():
         if working_path.suffix.lower() not in _VIDEO_EXTENSIONS:
             runtime.log(
-                "vs-frame-interpolate", "message",
+                "vs-frame-interpolate",
+                "message",
                 f"不支持的视频格式: {working_path.suffix}，跳过。",
             )
             return ctx
@@ -211,7 +223,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
     vspipe = _resolve_vspipe_path(cfg)
     if vspipe is None:
         runtime.log(
-            "vs-frame-interpolate", "error",
+            "vs-frame-interpolate",
+            "error",
             "VSPipe.exe 未找到。请配置 vspipe_path 或运行 resources/install_vapoursynth.ps1 安装 VapourSynth。",
         )
         return ctx
@@ -219,8 +232,9 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
     plugin_path_str = _resolve_vsmlrt_plugin()
     if plugin_path_str is None:
         runtime.log(
-            "vs-frame-interpolate", "error",
-            "vsmlrt.dll 未找到。请运行 resources/install_vsmlrt.ps1 安装 vs-mlrt 插件，或将 vsmlrt.dll 放入 resources/ 下任意位置。",
+            "vs-frame-interpolate",
+            "error",
+            "vsmlrt.dll 未找到。请运行 resources/install_vsmlrt.ps1 安装 vs-mlrt 插件，或将 vsmlrt.dll 放入 resources/ 下任意位置。",  # noqa: E501
         )
         return ctx
     plugin_path = Path(plugin_path_str)
@@ -228,7 +242,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
     model_dir = _resolve_model_dir(cfg)
     if model_dir is None:
         runtime.log(
-            "vs-frame-interpolate", "error",
+            "vs-frame-interpolate",
+            "error",
             "模型目录未找到，请运行 resources/install_vsmlrt.ps1 下载模型，或配置 model_path。",
         )
         return ctx
@@ -258,11 +273,13 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
     )
 
     runtime.log(
-        "vs-frame-interpolate", "hint",
+        "vs-frame-interpolate",
+        "hint",
         f"VSPipe 脚本已生成: {script_path}",
     )
     runtime.log(
-        "vs-frame-interpolate", "message",
+        "vs-frame-interpolate",
+        "message",
         f"开始补帧: {working_path.name} (模型: {model_name}, 倍数: {factor})...",
     )
 
@@ -288,7 +305,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
 
     if not result.is_success:
         runtime.log(
-            "vs-frame-interpolate", "error",
+            "vs-frame-interpolate",
+            "error",
             f"VSPipe 返回非零退出码: {result.exit_code}",
         )
         return ctx
@@ -299,20 +317,23 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
         if frame_dir.exists():
             ctx.track_extra_file(frame_dir)
             runtime.log(
-                "vs-frame-interpolate", "success",
+                "vs-frame-interpolate",
+                "success",
                 f"补帧完成，帧序列输出到: {frame_dir}",
             )
             return ctx.clone(working_path=frame_dir)
         else:
             runtime.log(
-                "vs-frame-interpolate", "error",
+                "vs-frame-interpolate",
+                "error",
                 f"帧序列子文件夹未创建: {frame_dir}",
             )
             return ctx
 
     ctx.track_extra_file(output_path)
     runtime.log(
-        "vs-frame-interpolate", "success",
+        "vs-frame-interpolate",
+        "success",
         f"补帧完成: {output_path.name}",
         {"output_path": str(output_path)},
     )

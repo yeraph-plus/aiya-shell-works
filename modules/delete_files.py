@@ -6,7 +6,6 @@ import fnmatch
 from pathlib import Path
 from typing import Any
 
-
 MODULE_META = {
     "slug": "delete-files",
     "name": "删除无用文件",
@@ -33,7 +32,7 @@ def _parse_patterns(patterns_str: str) -> list[str]:
     return [p.strip() for p in patterns_str.split() if p.strip()]
 
 
-def _collect_targets(ctx: "Any") -> list[Path]:
+def _collect_targets(ctx: Any) -> list[Path]:
     wp = Path(ctx.working_path)
     if ctx.atom == "file":
         return [wp] if wp.is_file() else []
@@ -42,7 +41,7 @@ def _collect_targets(ctx: "Any") -> list[Path]:
     return []
 
 
-def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     patterns_str = cfg.get("patterns", "")
     patterns = _parse_patterns(patterns_str)
 
@@ -59,9 +58,7 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
     failed = 0
 
     for f in targets:
-        matched = any(
-            fnmatch.fnmatch(f.name.lower(), p.lower()) for p in patterns
-        )
+        matched = any(fnmatch.fnmatch(f.name.lower(), p.lower()) for p in patterns)
         if not matched:
             continue
 
@@ -75,7 +72,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
 
     if deleted > 0:
         runtime.log(
-            "delete-files", "message",
+            "delete-files",
+            "message",
             f"删除完成: {deleted} 个文件已删除, {failed} 个失败。",
         )
     elif failed == 0:

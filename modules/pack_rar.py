@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-
 MODULE_META = {
     "slug": "pack-rar",
     "name": "RAR 打包",
@@ -91,7 +90,7 @@ def _build_command(cfg: dict, rar_exe: str, archive_path: Path, source_path: Pat
     return cmd
 
 
-def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     rar_exe = cfg.get("winrar_path", "").strip()
     if not rar_exe:
         runtime.log("pack-rar", "error", "未配置 WinRAR 路径，请在工作流中指定 rar.exe 的完整路径。")
@@ -137,6 +136,7 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
         if cfg.get("delete_after", False):
             try:
                 import shutil
+
                 shutil.rmtree(source)
                 runtime.log("pack-rar", "message", f"已删除源文件夹: {source.name}")
             except OSError as e:

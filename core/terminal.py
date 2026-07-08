@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import sys
+import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,26 +53,32 @@ class TerminalSessionRegistry:
     """
 
     def __init__(self) -> None:
-        self._sessions: dict[str, "TerminalSession"] = {}
+        self._sessions: dict[str, TerminalSession] = {}
+        self._lock = threading.Lock()
 
-    def register(self, session: "TerminalSession") -> None:
-        self._sessions[session.id] = session
+    def register(self, session: TerminalSession) -> None:
+        with self._lock:
+            self._sessions[session.id] = session
 
-    def unregister(self, session: "TerminalSession") -> None:
-        self._sessions.pop(session.id, None)
+    def unregister(self, session: TerminalSession) -> None:
+        with self._lock:
+            self._sessions.pop(session.id, None)
 
-    def get(self, session_id: str) -> "TerminalSession | None":
-        return self._sessions.get(session_id)
+    def get(self, session_id: str) -> TerminalSession | None:
+        with self._lock:
+            return self._sessions.get(session_id)
 
     def close_all(self) -> None:
         """Terminate every outstanding session (runtime shutdown)."""
 
-        for session in list(self._sessions.values()):
+        with self._lock:
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+        for session in sessions:
             try:
                 session.terminate()
             except Exception:  # pragma: no cover
                 pass
-        self._sessions.clear()
 
     def __len__(self) -> int:
         return len(self._sessions)
@@ -84,7 +91,7 @@ class TerminalSession:
         self,
         cmd: list[str],
         *,
-        runtime: "PipelineRuntime",
+        runtime: PipelineRuntime,
         cwd: str | Path | None = None,
         env: dict[str, str] | None = None,
         exit_pattern: str | None = None,
@@ -168,6 +175,7 @@ class TerminalSession:
 
     def _run_posix_pty(self) -> TerminalResult:
         import pty
+
         try:
             pid, fd = pty.fork()
         except OSError as exc:  # pragma: no cover
@@ -220,7 +228,8 @@ class TerminalSession:
 
         if print_warning:
             self._runtime.log(
-                "terminal", "warning",
+                "terminal",
+                "warning",
                 "原生 PTY 不可用，回退到子进程模式（无交互 stdin）。",
                 {"session_id": self.id, "command": " ".join(self.cmd)},
             )
@@ -258,7 +267,9 @@ class TerminalSession:
         if not clean:
             return
         self._runtime.log(
-            "terminal", "message", "terminal:output",
+            "terminal",
+            "message",
+            "terminal:output",
             {"session_id": self.id, "text": clean},
         )
         self._check_exit_pattern(clean)
@@ -270,7 +281,9 @@ class TerminalSession:
         if self._exit_pattern in self._buf:
             self._pattern_matched = True
             self._runtime.log(
-                "terminal", "message", "terminal:close",
+                "terminal",
+                "message",
+                "terminal:close",
                 {"session_id": self.id},
             )
             if self._exit_action == "write_newline":
@@ -280,13 +293,17 @@ class TerminalSession:
 
     def _emit_started(self) -> None:
         self._runtime.log(
-            "terminal", "message", "terminal:started",
+            "terminal",
+            "message",
+            "terminal:started",
             {"session_id": self.id, "command": " ".join(self.cmd), "backend": self._backend},
         )
 
     def _emit_finished(self, exit_code: int) -> None:
         self._runtime.log(
-            "terminal", "message", "terminal:finished",
+            "terminal",
+            "message",
+            "terminal:finished",
             {"session_id": self.id, "exit_code": exit_code},
         )
 
@@ -328,7 +345,7 @@ class TerminalSession:
             pass
 
 
-def get_session(runtime: "PipelineRuntime", session_id: str) -> TerminalSession | None:
+def get_session(runtime: PipelineRuntime, session_id: str) -> TerminalSession | None:
     """Convenience accessor used by GUI layers to find an interactive terminal."""
 
     return runtime.sessions.get(session_id)

@@ -31,15 +31,20 @@ def case(name: str) -> callable:
     def deco(fn):
         CASES.append((name, fn))
         return fn
+
     return deco
 
 
 def run_cli(workflow: str, out: Path, *extra: str) -> tuple[int, str, str]:
     args = [
-        sys.executable, str(CLI),
-        "--modules-dir", str(MODULES),
-        "--workflows-dir", str(WORKFLOWS),
-        "--output-dir", str(out),
+        sys.executable,
+        str(CLI),
+        "--modules-dir",
+        str(MODULES),
+        "--workflows-dir",
+        str(WORKFLOWS),
+        "--output-dir",
+        str(out),
         workflow,
         *extra,
     ]
@@ -55,7 +60,8 @@ def _setup_inputs(root: Path) -> dict[str, Path]:
     src.mkdir()
     (src / "a.txt").write_text("alpha", encoding="utf-8")
     (src / "b.txt").write_text("beta", encoding="utf-8")
-    inner = src / "inner"; inner.mkdir()
+    inner = src / "inner"
+    inner.mkdir()
     (inner / "c.txt").write_text("gamma", encoding="utf-8")
     return {"src": src, "single_file": src / "a.txt"}
 
@@ -76,15 +82,17 @@ def test_file_rename() -> None:
     out = WORK / "file-rename"
     scratch = _setup_inputs(WORK / "file-rename-input")
     code, _, err = run_cli(
-        "example-file-rename.yaml", out,
-        "--files", str(scratch["src"]), "--recurse",
+        "example-file-rename.yaml",
+        out,
+        "--files",
+        str(scratch["src"]),
+        "--recurse",
     )
     if code != 0:
         FAILS.append(f"file-rename: exit={code} err={err.strip()[:200]}")
         return
     # Three files renamed (a.txt, b.txt, inner/c.txt — recurse=true)
-    renamed = [p for p in out.rglob("*") if p.is_file()
-               and "_renamed" in p.name]
+    renamed = [p for p in out.rglob("*") if p.is_file() and "_renamed" in p.name]
     if len(renamed) != 3:
         FAILS.append(f"file-rename: expected 3 renamed files, got {len(renamed)}")
     if not (out / "renames-summary.txt").exists():
@@ -94,11 +102,14 @@ def test_file_rename() -> None:
 @case("folder-rename")
 def test_folder_rename() -> None:
     out = WORK / "folder-rename"
-    src = WORK / "folder-rename-input" / "mydir"; src.mkdir(parents=True)
+    src = WORK / "folder-rename-input" / "mydir"
+    src.mkdir(parents=True)
     (src / "note.txt").write_text("note", encoding="utf-8")
     code, _, err = run_cli(
-        "example-folder-rename.yaml", out,
-        "--files", str(src),  # recurse=false → folder passed as whole unit
+        "example-folder-rename.yaml",
+        out,
+        "--files",
+        str(src),  # recurse=false → folder passed as whole unit
     )
     if code != 0:
         FAILS.append(f"folder-rename: exit={code} err={err.strip()[:200]}")
@@ -118,8 +129,11 @@ def test_cycle_count() -> None:
     out = WORK / "cycle-count"
     scratch = _setup_inputs(WORK / "cycle-count-input")
     code, _, err = run_cli(
-        "example-cycle-count.yaml", out,
-        "--files", str(scratch["src"]), "--recurse",
+        "example-cycle-count.yaml",
+        out,
+        "--files",
+        str(scratch["src"]),
+        "--recurse",
     )
     if code != 0:
         FAILS.append(f"cycle-count: exit={code} err={err.strip()[:200]}")
@@ -138,8 +152,10 @@ def test_cycle_count() -> None:
 def test_line_echo() -> None:
     out = WORK / "line-echo"
     code, _, err = run_cli(
-        "example-line-echo.yaml", out,
-        "--lines", "alpha\nbeta\ngamma",
+        "example-line-echo.yaml",
+        out,
+        "--lines",
+        "alpha\nbeta\ngamma",
     )
     if code != 0:
         FAILS.append(f"line-echo: exit={code} err={err.strip()[:200]}")
@@ -159,8 +175,11 @@ def test_external_tool() -> None:
         FAILS.append(f"external-tool: mock tool missing at {mock}")
         return
     code, _, err = run_cli(
-        "example-external-tool.yaml", out,
-        "--files", str(scratch["src"]), "--recurse",
+        "example-external-tool.yaml",
+        out,
+        "--files",
+        str(scratch["src"]),
+        "--recurse",
     )
     if code != 0:
         FAILS.append(f"external-tool: exit={code} err={err.strip()[:200]}")
@@ -170,7 +189,8 @@ def test_external_tool() -> None:
     if len(done_files) != 3:
         FAILS.append(
             f"external-tool: expected 3 .done sidecars, got {len(done_files)}; "
-            f"cwd contents = {[p.name for p in out.rglob('*')]}")
+            f"cwd contents = {[p.name for p in out.rglob('*')]}"
+        )
 
 
 def main() -> int:

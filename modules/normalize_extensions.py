@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-
 MODULE_META = {
     "slug": "normalize-extensions",
     "name": "标准化文件后缀",
@@ -55,7 +54,7 @@ def _make_unique(target: Path) -> Path:
         counter += 1
 
 
-def _collect_targets(ctx: "Any") -> list[Path]:
+def _collect_targets(ctx: Any) -> list[Path]:
     wp = Path(ctx.working_path)
     if ctx.atom == "file":
         return [wp] if wp.is_file() else []
@@ -64,7 +63,7 @@ def _collect_targets(ctx: "Any") -> list[Path]:
     return []
 
 
-def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     lowercase = cfg.get("lowercase", True)
 
     targets = _collect_targets(ctx)
@@ -86,20 +85,23 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
             f.rename(new_path)
             renamed += 1
             runtime.log(
-                "normalize-extensions", "success",
+                "normalize-extensions",
+                "success",
                 f"已标准化: {f.name} → {new_path.name}",
             )
             if ctx.atom == "file":
                 updated_working_path = new_path
         except OSError as e:
             runtime.log(
-                "normalize-extensions", "error",
+                "normalize-extensions",
+                "error",
                 f"重命名失败: {f.name} ({e})",
             )
 
     if renamed > 0:
         runtime.log(
-            "normalize-extensions", "message",
+            "normalize-extensions",
+            "message",
             f"后缀标准化完成: {renamed} 个文件。",
         )
     else:

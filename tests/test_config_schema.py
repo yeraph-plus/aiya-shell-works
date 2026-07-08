@@ -9,15 +9,14 @@ from __future__ import annotations
 import pytest
 
 from core import (
-    ConfigSchemaValidationError, ConfigValidationError,
-    normalize_config_params, validate_config_schema,
+    ConfigValidationError,
+    normalize_config_params,
+    validate_config_schema,
 )
 
 
 def _schema(properties: dict, required: list = None) -> dict:
-    return {"type": "object",
-            "properties": properties,
-            "required": required or []}
+    return {"type": "object", "properties": properties, "required": required or []}
 
 
 def test_validate_config_schema_rejects_non_dict() -> None:
@@ -94,6 +93,7 @@ def test_normalize_select_validates_options() -> None:
 
 def test_normalize_file_path_accepts_str_or_path() -> None:
     from pathlib import Path
+
     s = _schema({"x": {"type": "file_path"}})
     assert normalize_config_params(s, {"x": "a/b.txt"}) == {"x": "a/b.txt"}
     # Path normalization (a/b → a\b on win32) is acceptable; only structure matters.

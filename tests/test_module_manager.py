@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 import pytest
 
 from core import ModuleManager
@@ -19,7 +20,7 @@ def _write(modules_dir: Path, name: str, body: str) -> None:
     (modules_dir / name).write_text(body, encoding="utf-8")
 
 
-VALID_MODULE = '''MODULE_META = {
+VALID_MODULE = """MODULE_META = {
     "slug": "demo",
     "name": "Demo",
     "core_version": "2.0.0",
@@ -30,7 +31,7 @@ CONFIG_SCHEMA = {"type": "object", "properties": {}}
 
 def run(ctx, cfg, runtime):
     return ctx
-'''
+"""
 
 
 def test_valid_module_is_cached(modules_dir: Path) -> None:
@@ -49,8 +50,7 @@ def test_rescan_rebuilds_cache(modules_dir: Path) -> None:
     _write(modules_dir, "demo.py", VALID_MODULE)
     mgr = ModuleManager(modules_dir)
     mgr.scan_modules()
-    _write(modules_dir, "extra.py", VALID_MODULE.replace('"demo"', '"extra"')
-                                  .replace('"Demo"', '"Extra"'))
+    _write(modules_dir, "extra.py", VALID_MODULE.replace('"demo"', '"extra"').replace('"Demo"', '"Extra"'))
     # Cached result
     assert "extra" not in mgr.scan_modules()
     # Force rescan
@@ -101,8 +101,7 @@ def test_module_duplicate_slug_rejected(modules_dir: Path) -> None:
 
 
 def test_module_parent_reference_unknown_logged(modules_dir: Path) -> None:
-    body = VALID_MODULE.replace('}\nCONFIG_SCHEMA',
-                                '"parent": "ghost"},\nCONFIG_SCHEMA')
+    body = VALID_MODULE.replace("}\nCONFIG_SCHEMA", '"parent": "ghost"},\nCONFIG_SCHEMA')
     _write(modules_dir, "with_parent.py", body)
     mgr = ModuleManager(modules_dir)
     mgr.scan_modules()
@@ -110,8 +109,7 @@ def test_module_parent_reference_unknown_logged(modules_dir: Path) -> None:
 
 
 def test_module_config_schema_invalid_rejects(modules_dir: Path) -> None:
-    body = VALID_MODULE.replace('{"type": "object", "properties": {}}',
-                                '{"type": "weird", "properties": {}}')
+    body = VALID_MODULE.replace('{"type": "object", "properties": {}}', '{"type": "weird", "properties": {}}')
     _write(modules_dir, "bad_schema.py", body)
     assert "demo" not in ModuleManager(modules_dir).scan_modules()
 

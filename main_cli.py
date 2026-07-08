@@ -1,4 +1,4 @@
-﻿"""CLI entry point for the Shell Worker platform.
+"""CLI entry point for the Shell Worker platform.
 
 Designed to be usable on a Linux headless server with no PySide6 installed.
 No Python GUI imports anywhere -- runtime detects PTY availability and falls
@@ -17,15 +17,14 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from core import (
     ModuleManager,
     PipelineExecutor,
     PipelineRuntime,
     WorkflowLoader,
-    WorkflowSummary,
 )
 from core.exceptions import (
     PipelineCancelledError,
@@ -42,19 +41,21 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("workflow", nargs="?", help="workflow YAML path or filename under workflows/")
 
     # ---- input axes ----
-    p.add_argument("--files", nargs="+", default=None,
-                   help="input file/folder paths, supports glob")
-    p.add_argument("--recurse", action="store_true", default=False,
-                   help="recursively expand folders into file units (off=folders are whole units)")
-    p.add_argument("--lines", default=None,
-                   help="text input: separate lines with newline")
-    p.add_argument("--lines-file", default=None,
-                   help="text input: read from file, '-' for stdin")
+    p.add_argument("--files", nargs="+", default=None, help="input file/folder paths, supports glob")
+    p.add_argument(
+        "--recurse",
+        action="store_true",
+        default=False,
+        help="recursively expand folders into file units (off=folders are whole units)",
+    )
+    p.add_argument("--lines", default=None, help="text input: separate lines with newline")
+    p.add_argument("--lines-file", default=None, help="text input: read from file, '-' for stdin")
 
     # ---- execution ----
     p.add_argument("--output-dir", default=None, help="output directory (default ./out)")
-    p.add_argument("--direct", action="store_true", default=False,
-                   help="direct mode: operate on original files without copying")
+    p.add_argument(
+        "--direct", action="store_true", default=False, help="direct mode: operate on original files without copying"
+    )
     p.add_argument("--modules-dir", default="modules", help="modules directory")
     p.add_argument("--workflows-dir", default="workflows", help="workflows directory")
 
@@ -62,10 +63,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--log-file", default=None, help="JSONL log sink path")
 
     # ---- introspection ----
-    p.add_argument("--list-workflows", action="store_true", default=False,
-                   help="list workflows under workflows/")
-    p.add_argument("--list-modules", action="store_true", default=False,
-                   help="list modules under modules/")
+    p.add_argument("--list-workflows", action="store_true", default=False, help="list workflows under workflows/")
+    p.add_argument("--list-modules", action="store_true", default=False, help="list modules under modules/")
     return p
 
 
@@ -136,8 +135,7 @@ def _list_workflows(loader: WorkflowLoader) -> None:
     print(f"workflows ({len(summaries)}):")
     for s in summaries:
         if s.is_valid:
-            print(f"  {s.filename}  atom={s.atom} scope={s.scope} "
-                  f"steps={s.step_count}  - {s.name}")
+            print(f"  {s.filename}  atom={s.atom} scope={s.scope} steps={s.step_count}  - {s.name}")
         else:
             print(f"  [invalid] {s.filename}  - {'; '.join(s.errors)}")
 

@@ -8,7 +8,6 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-
 MODULE_META = {
     "slug": "extract-archive",
     "name": "提取图集",
@@ -45,13 +44,14 @@ CONFIG_SCHEMA = {
 }
 
 
-def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     working_path = Path(ctx.working_path)
     output_dir = Path(ctx.output_dir)
 
     if working_path.suffix.lower() != ".zip":
         runtime.log(
-            "extract-archive", "error",
+            "extract-archive",
+            "error",
             f"文件类型不支持，仅接受 .zip 文件: {working_path.name}",
         )
         return ctx
@@ -77,7 +77,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
 
             if not image_files:
                 runtime.log(
-                    "extract-archive", "error",
+                    "extract-archive",
+                    "error",
                     f"ZIP 中未发现图片文件: {working_path.name}",
                 )
                 return ctx
@@ -86,7 +87,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
             selected = random.sample(image_files, selected_count)
     except zipfile.BadZipFile:
         runtime.log(
-            "extract-archive", "error",
+            "extract-archive",
+            "error",
             f"ZIP 文件损坏或无法读取: {working_path.name}",
         )
         return ctx
@@ -134,8 +136,9 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
         ctx.track_extra_file(path)
 
     runtime.log(
-        "extract-archive", "success",
-        f"已从 {working_path.name} 提取 {selected_count} 张图片到 {subfolder.name}/（图片 {len(image_files)} 张，视频 {len(video_files)} 个，体积 {total_uncompressed} 字节）",
+        "extract-archive",
+        "success",
+        f"已从 {working_path.name} 提取 {selected_count} 张图片到 {subfolder.name}/（图片 {len(image_files)} 张，视频 {len(video_files)} 个，体积 {total_uncompressed} 字节）",  # noqa: E501
         {
             "extracted": selected_count,
             "total_images": len(image_files),

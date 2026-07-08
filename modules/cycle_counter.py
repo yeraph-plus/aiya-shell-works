@@ -24,24 +24,21 @@ MODULE_META = {
 CONFIG_SCHEMA = {
     "type": "object",
     "properties": {
-        "report_filename": {"type": "str", "title": "Report Filename",
-                             "default": "count.txt"},
+        "report_filename": {"type": "str", "title": "Report Filename", "default": "count.txt"},
     },
 }
 
 
-def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     files = sorted(p for p in Path(ctx.working_path).rglob("*") if p.is_file())
     for i, fp in enumerate(files, 1):
-        runtime.log("cycle-counter", "success",
-                    f"{i}: {fp.name}",
-                    {"index": i, "path": str(fp)})
+        runtime.log("cycle-counter", "success", f"{i}: {fp.name}", {"index": i, "path": str(fp)})
 
     # Avoid re-counting our own report by writing last.
     report = Path(ctx.working_path) / cfg["report_filename"]
     report.write_text(f"count={len(files)}\n", encoding="utf-8")
     ctx.track_extra_file(report)
-    runtime.log("cycle-counter", "message",
-                f"统计完成: count={len(files)}",
-                {"count": len(files), "report": str(report)})
+    runtime.log(
+        "cycle-counter", "message", f"统计完成: count={len(files)}", {"count": len(files), "report": str(report)}
+    )
     return ctx

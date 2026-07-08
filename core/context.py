@@ -21,11 +21,19 @@ from typing import Any, Literal
 
 Atom = Literal["file", "folder", "line", "none"]
 
-_VALID_CLONE_FIELDS: frozenset[str] = frozenset({
-    "original_input", "working_path", "output_dir",
-    "atom", "shared", "extra_files", "source_root",
-    "is_file", "is_dir",
-})
+_VALID_CLONE_FIELDS: frozenset[str] = frozenset(
+    {
+        "original_input",
+        "working_path",
+        "output_dir",
+        "atom",
+        "shared",
+        "extra_files",
+        "source_root",
+        "is_file",
+        "is_dir",
+    }
+)
 
 
 @dataclass(slots=True)

@@ -12,7 +12,10 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
-    QDialog, QPlainTextEdit, QVBoxLayout, QWidget,
+    QDialog,
+    QPlainTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
 if TYPE_CHECKING:
@@ -29,7 +32,7 @@ class TerminalWindow(QDialog):
         self,
         session_id: str,
         command: str,
-        runtime: "PipelineRuntime",
+        runtime: PipelineRuntime,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -57,9 +60,7 @@ class TerminalWindow(QDialog):
         font = QFont("Consolas", 10)
         font.setStyleHint(QFont.StyleHint.Monospace)
         self._output.setFont(font)
-        self._output.setStyleSheet(
-            "QPlainTextEdit { background-color: #1e1e1e; color: #d4d4d4; }"
-        )
+        self._output.setStyleSheet("QPlainTextEdit { background-color: #1e1e1e; color: #d4d4d4; }")
         layout.addWidget(self._output, stretch=1)
 
     def closeEvent(self, event) -> None:

@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-
 MODULE_META = {
     "slug": "ffmpeg-convert",
     "name": "FFmpeg 转码",
@@ -191,12 +190,43 @@ CONFIG_SCHEMA = {
     },
 }
 
-_SUPPORTED_EXTENSIONS = frozenset({
-    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts",
-    ".mts", ".m2ts", ".3gp", ".ogv", ".vob", ".mxf",
-    ".mp3", ".aac", ".wav", ".flac", ".ogg", ".wma", ".m4a", ".opus", ".ape", ".wv",
-    ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tiff", ".tif",
-})
+_SUPPORTED_EXTENSIONS = frozenset(
+    {
+        ".mp4",
+        ".mkv",
+        ".avi",
+        ".mov",
+        ".wmv",
+        ".flv",
+        ".webm",
+        ".m4v",
+        ".ts",
+        ".mts",
+        ".m2ts",
+        ".3gp",
+        ".ogv",
+        ".vob",
+        ".mxf",
+        ".mp3",
+        ".aac",
+        ".wav",
+        ".flac",
+        ".ogg",
+        ".wma",
+        ".m4a",
+        ".opus",
+        ".ape",
+        ".wv",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".bmp",
+        ".gif",
+        ".webp",
+        ".tiff",
+        ".tif",
+    }
+)
 
 
 def _resolve_ffmpeg_path(cfg: dict) -> str | None:
@@ -215,15 +245,12 @@ def _resolve_ffmpeg_path(cfg: dict) -> str | None:
     return None
 
 
-def _collect_targets(ctx: "Any") -> list[Path]:
+def _collect_targets(ctx: Any) -> list[Path]:
     wp = Path(ctx.working_path)
     if ctx.atom == "file":
         return [wp] if wp.is_file() and wp.suffix.lower() in _SUPPORTED_EXTENSIONS else []
     if wp.is_dir():
-        return sorted(
-            f for f in wp.iterdir()
-            if f.is_file() and f.suffix.lower() in _SUPPORTED_EXTENSIONS
-        )
+        return sorted(f for f in wp.iterdir() if f.is_file() and f.suffix.lower() in _SUPPORTED_EXTENSIONS)
     return []
 
 
@@ -302,7 +329,7 @@ def _build_command(
     return cmd
 
 
-def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     targets = _collect_targets(ctx)
     if not targets:
         runtime.log("ffmpeg-convert", "message", "未发现支持的媒体文件，跳过。")
@@ -311,8 +338,9 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
     ffmpeg = _resolve_ffmpeg_path(cfg)
     if ffmpeg is None:
         runtime.log(
-            "ffmpeg-convert", "error",
-            "FFmpeg 未找到，请配置路径或将 ffmpeg.exe 放置到 resources/ffmpeg/ 下，或在工作流配置中指定 ffmpeg.exe 位置。",
+            "ffmpeg-convert",
+            "error",
+            "FFmpeg 未找到，请配置路径或将 ffmpeg.exe 放置到 resources/ffmpeg/ 下，或在工作流配置中指定 ffmpeg.exe 位置。",  # noqa: E501
         )
         return ctx
 
@@ -326,11 +354,13 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
         cmd = _build_command(target, output_file, cfg)
 
         runtime.log(
-            "ffmpeg-convert", "hint",
+            "ffmpeg-convert",
+            "hint",
             f"FFmpeg 命令行: {' '.join(cmd)}",
         )
         runtime.log(
-            "ffmpeg-convert", "message",
+            "ffmpeg-convert",
+            "message",
             f"开始转码: {target.name} → {output_file.name}",
         )
 
@@ -345,26 +375,30 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
             ctx.track_extra_file(output_file)
             succeeded += 1
             runtime.log(
-                "ffmpeg-convert", "success",
+                "ffmpeg-convert",
+                "success",
                 f"转码完成: {output_file.name}",
                 {"output_file": str(output_file)},
             )
         else:
             failed += 1
             runtime.log(
-                "ffmpeg-convert", "error",
+                "ffmpeg-convert",
+                "error",
                 f"FFmpeg 返回非零退出码: {result.exit_code} — {target.name}",
             )
 
     runtime.log(
-        "ffmpeg-convert", "message",
+        "ffmpeg-convert",
+        "message",
         f"转码批次完成: {succeeded} 成功, {failed} 失败 (共 {len(targets)} 个文件)。",
         {"succeeded": succeeded, "failed": failed, "total": len(targets)},
     )
 
     if failed > 0 and succeeded == 0:
         runtime.log(
-            "ffmpeg-convert", "error",
+            "ffmpeg-convert",
+            "error",
             "所有文件转码均失败。",
         )
 

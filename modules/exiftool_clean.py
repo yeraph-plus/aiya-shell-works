@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-
 MODULE_META = {
     "slug": "exiftool-clean",
     "name": "清除EXIF元数据",
@@ -28,7 +27,7 @@ CONFIG_SCHEMA = {
             "type": "str",
             "title": "文件名字符集",
             "default": "936",
-            "description": "ExifTool -charset filename= 参数值。默认 936 (简体中文 GBK)。可运行 chcp 查看终端当前代码页（如 65001 为 UTF-8 代码页），设为空则不指定字符集。",
+            "description": "ExifTool -charset filename= 参数值。默认 936 (简体中文 GBK)。可运行 chcp 查看终端当前代码页（如 65001 为 UTF-8 代码页），设为空则不指定字符集。",  # noqa: E501
         },
         "keep_orientation": {
             "type": "bool",
@@ -49,13 +48,41 @@ CONFIG_SCHEMA = {
     },
 }
 
-_SUPPORTED_EXTENSIONS = frozenset({
-    ".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".bmp", ".tiff", ".tif",
-    ".webp", ".avif", ".heic", ".heif", ".gif",
-    ".raw", ".cr2", ".nef", ".arw", ".dng", ".cr3", ".orf", ".rw2",
-    ".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm", ".m4v", ".ts",
-    ".pdf",
-})
+_SUPPORTED_EXTENSIONS = frozenset(
+    {
+        ".jpg",
+        ".jpeg",
+        ".jpe",
+        ".jfif",
+        ".png",
+        ".bmp",
+        ".tiff",
+        ".tif",
+        ".webp",
+        ".avif",
+        ".heic",
+        ".heif",
+        ".gif",
+        ".raw",
+        ".cr2",
+        ".nef",
+        ".arw",
+        ".dng",
+        ".cr3",
+        ".orf",
+        ".rw2",
+        ".mp4",
+        ".avi",
+        ".mov",
+        ".mkv",
+        ".wmv",
+        ".flv",
+        ".webm",
+        ".m4v",
+        ".ts",
+        ".pdf",
+    }
+)
 
 
 def _resolve_exiftool_path(cfg: dict) -> str | None:
@@ -83,7 +110,7 @@ def _resolve_exiftool_path(cfg: dict) -> str | None:
     return None
 
 
-def _collect_targets(ctx: "Any", cfg: dict) -> list[Path]:
+def _collect_targets(ctx: Any, cfg: dict) -> list[Path]:
     wp = Path(ctx.working_path)
     if ctx.atom == "file":
         return [wp] if wp.is_file() and wp.suffix.lower() in _SUPPORTED_EXTENSIONS else []
@@ -94,7 +121,7 @@ def _collect_targets(ctx: "Any", cfg: dict) -> list[Path]:
     return []
 
 
-def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     targets = _collect_targets(ctx, cfg)
     if not targets:
         runtime.log("exiftool-clean", "message", "未发现支持格式的文件，跳过。")
@@ -103,8 +130,9 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
     exiftool = _resolve_exiftool_path(cfg)
     if exiftool is None:
         runtime.log(
-            "exiftool-clean", "error",
-            "ExifTool 未找到，请配置路径或将 exiftool(-k).exe 放置到 resources/exiftool/ 下，或在工作流配置中指定 exiftool(-k).exe 位置。",
+            "exiftool-clean",
+            "error",
+            "ExifTool 未找到，请配置路径或将 exiftool(-k).exe 放置到 resources/exiftool/ 下，或在工作流配置中指定 exiftool(-k).exe 位置。",  # noqa: E501
         )
         return ctx
 
@@ -126,11 +154,13 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
         cmd.extend(str(f) for f in targets)
 
     runtime.log(
-        "exiftool-clean", "hint",
+        "exiftool-clean",
+        "hint",
         f"ExifTool 命令行: {' '.join(cmd)}",
     )
     runtime.log(
-        "exiftool-clean", "message",
+        "exiftool-clean",
+        "message",
         f"开始清除 {len(targets)} 个文件的元数据 (ExifTool: {exiftool})...",
     )
 
@@ -142,13 +172,15 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
 
     if result.is_success:
         runtime.log(
-            "exiftool-clean", "success",
+            "exiftool-clean",
+            "success",
             f"元数据清除完成: {len(targets)} 个文件。",
             {"file_count": len(targets)},
         )
     else:
         runtime.log(
-            "exiftool-clean", "error",
+            "exiftool-clean",
+            "error",
             f"ExifTool 返回非零退出码: {result.exit_code}",
         )
 

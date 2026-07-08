@@ -29,10 +29,8 @@ CONFIG_SCHEMA = {
 }
 
 
-def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     target = Path(ctx.output_dir) / cfg["filename"]
     target.write_text(cfg["content"], encoding="utf-8")
-    runtime.log("verify-create-text-file", "success",
-                f"已生成 {target.name}", {"path": str(target)})
-    return ctx.clone(working_path=target,
-                     extra_files=[*ctx.extra_files, target])
+    runtime.log("verify-create-text-file", "success", f"已生成 {target.name}", {"path": str(target)})
+    return ctx.clone(working_path=target, extra_files=[*ctx.extra_files, target])

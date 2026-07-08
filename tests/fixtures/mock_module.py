@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
-
 
 CALLS: list[dict[str, Any]] = []
 EVENTS: list[tuple[str, str, str]] = []
@@ -32,15 +30,17 @@ CONFIG_SCHEMA = {
 
 
 def run(ctx, cfg, runtime):
-    CALLS.append({
-        "atom": ctx.atom,
-        "marker": cfg.get("marker", ""),
-        "working_path": str(ctx.working_path),
-        "shared": dict(ctx.shared),
-        "extra_files": list(ctx.extra_files),
-        "original_input": str(ctx.original_input) if ctx.original_input else None,
-    })
-    runtime.log("mock-probe", "message", f"probe {cfg.get('marker','')}")
+    CALLS.append(
+        {
+            "atom": ctx.atom,
+            "marker": cfg.get("marker", ""),
+            "working_path": str(ctx.working_path),
+            "shared": dict(ctx.shared),
+            "extra_files": list(ctx.extra_files),
+            "original_input": str(ctx.original_input) if ctx.original_input else None,
+        }
+    )
+    runtime.log("mock-probe", "message", f"probe {cfg.get('marker', '')}")
     EVENTS.append(("mock-probe", "message", cfg.get("marker", "")))
     return ctx
 

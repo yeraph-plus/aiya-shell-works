@@ -2,20 +2,21 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import json
-
-import pytest
+from pathlib import Path
 
 from core.events import (
-    EventBus, InMemorySink, JSONLFileSink, NullSink, PipelineEvent,
+    EventBus,
+    InMemorySink,
+    JSONLFileSink,
+    PipelineEvent,
 )
 from core.runtime import PipelineRuntime
-
 
 # ---------------------------------------------------------------------------
 # EventBus
 # ---------------------------------------------------------------------------
+
 
 def test_event_bus_log_stores_and_dispatches() -> None:
     bus = EventBus()
@@ -90,7 +91,8 @@ def test_event_bus_sink_failure_isolated() -> None:
     """Sink errors must not crash the publisher."""
 
     class BadSink:
-        def write(self, event: PipelineEvent) -> None: raise RuntimeError("sink boom")
+        def write(self, event: PipelineEvent) -> None:
+            raise RuntimeError("sink boom")
 
     bus = EventBus(sink=BadSink())
     bus.log("m", "message", "ok")
@@ -110,6 +112,7 @@ def test_event_bus_has_errors() -> None:
 # JSONLFileSink
 # ---------------------------------------------------------------------------
 
+
 def test_jsonl_file_sink_writes_jsonl(tmp_path: Path) -> None:
     path = tmp_path / "events.log"
     sink = JSONLFileSink(path)
@@ -127,6 +130,7 @@ def test_jsonl_file_sink_writes_jsonl(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # PipelineRuntime
 # ---------------------------------------------------------------------------
+
 
 def test_runtime_starts_with_fresh_bus() -> None:
     r = PipelineRuntime()
@@ -155,7 +159,7 @@ def test_runtime_replace_bus_isolates_stream(tmp_path: Path) -> None:
     r = PipelineRuntime()
     bus_a = r.bus
     bus_a.log("unitA", "message", "first")
-    bus_b = r.replace_bus()
+    r.replace_bus()
     r.log("unitB", "message", "second")
 
     # bus_a retains only its own events; bus_b retains only its own.

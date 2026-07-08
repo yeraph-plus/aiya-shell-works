@@ -6,7 +6,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-
 MODULE_META = {
     "slug": "gallery-rename",
     "name": "Gallery 重命名",
@@ -48,16 +47,17 @@ def _natural_sort_key(name: str) -> list:
     return [int(p) if p.isdigit() else p.lower() for p in parts]
 
 
-def _collect_targets(ctx: "Any") -> list[Path]:
+def _collect_targets(ctx: Any) -> list[Path]:
     wp = Path(ctx.working_path)
     if not wp.is_dir():
         return []
     return sorted(
-        [f for f in wp.iterdir() if f.is_file()], key=lambda f: f.name.lower(),
+        [f for f in wp.iterdir() if f.is_file()],
+        key=lambda f: f.name.lower(),
     )
 
 
-def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     working_dir = Path(ctx.working_path)
     if not working_dir.is_dir():
         runtime.log("gallery-rename", "error", "working_path 不是目录。")
@@ -121,7 +121,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
             except OSError as e:
                 failed += 1
                 runtime.log(
-                    "gallery-rename", "error",
+                    "gallery-rename",
+                    "error",
                     f"重命名失败: {f.name} ({e})",
                 )
 
@@ -129,7 +130,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
 
     if renamed > 0:
         runtime.log(
-            "gallery-rename", "message",
+            "gallery-rename",
+            "message",
             f"重命名完成: {renamed} 个文件, {failed} 个失败。",
             {"renamed": renamed, "failed": failed},
         )

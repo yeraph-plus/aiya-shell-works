@@ -29,23 +29,21 @@ CONFIG_SCHEMA = {
 }
 
 
-def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     src = Path(ctx.working_path)
     new = src.with_name(f"{cfg.get('prefix', '')}{src.name}{cfg.get('suffix', '')}")
     if src == new:
-        runtime.log("verify-rename-path", "hint",
-                    f"无变化: {src.name}")
+        runtime.log("verify-rename-path", "hint", f"无变化: {src.name}")
         return ctx
     src.rename(new)
     renames = list(ctx.shared.get("renames", []))
-    renames.append({
-        "from": str(src),
-        "to": str(new),
-        "from_name": src.name,
-        "to_name": new.name,
-    })
-    runtime.log("verify-rename-path", "success",
-                f"{src.name} -> {new.name}",
-                {"old": str(src), "new": str(new)})
-    return ctx.clone(working_path=new,
-                     shared={**ctx.shared, "renames": renames})
+    renames.append(
+        {
+            "from": str(src),
+            "to": str(new),
+            "from_name": src.name,
+            "to_name": new.name,
+        }
+    )
+    runtime.log("verify-rename-path", "success", f"{src.name} -> {new.name}", {"old": str(src), "new": str(new)})
+    return ctx.clone(working_path=new, shared={**ctx.shared, "renames": renames})

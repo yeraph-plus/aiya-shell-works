@@ -8,16 +8,22 @@ three fields instead of the legacy ``mode`` string.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 from core import CORE_VERSION, ModuleDefinition, WorkflowDefinition, WorkflowMeta, WorkflowStep
 
-
 SUPPORTED_FIELD_TYPES = (
-    "int", "float", "str", "bool", "select", "radio",
-    "file_path", "folder_path",
+    "int",
+    "float",
+    "str",
+    "bool",
+    "select",
+    "radio",
+    "file_path",
+    "folder_path",
 )
 
 
@@ -75,15 +81,9 @@ def iter_schema_fields(schema: Mapping[str, Any] | None) -> tuple[SchemaField, .
         return ()
     if schema.get("type") == "object" and isinstance(schema.get("properties"), Mapping):
         properties = schema["properties"]
-        required_fields = {
-            item for item in schema.get("required", [])
-            if isinstance(item, str) and item.strip()
-        }
+        required_fields = {item for item in schema.get("required", []) if isinstance(item, str) and item.strip()}
     else:
-        properties = {
-            k: v for k, v in schema.items()
-            if isinstance(k, str) and isinstance(v, Mapping)
-        }
+        properties = {k: v for k, v in schema.items() if isinstance(k, str) and isinstance(v, Mapping)}
         required_fields = set()
 
     fields: list[SchemaField] = []
@@ -96,9 +96,7 @@ def iter_schema_fields(schema: Mapping[str, Any] | None) -> tuple[SchemaField, .
             SchemaField(
                 name=name,
                 field_type=field_type,
-                label=str(definition.get("title")
-                          or definition.get("label")
-                          or name.replace("_", " ").title()),
+                label=str(definition.get("title") or definition.get("label") or name.replace("_", " ").title()),
                 default=default,
                 required=name in required_fields or bool(definition.get("required")),
                 options=options,
@@ -173,7 +171,7 @@ class WorkflowDraft:
             self.steps = []
 
     @classmethod
-    def from_workflow(cls, workflow: WorkflowDefinition) -> "WorkflowDraft":
+    def from_workflow(cls, workflow: WorkflowDefinition) -> WorkflowDraft:
         return cls(
             name=workflow.meta.name,
             description=workflow.meta.description,
@@ -181,8 +179,7 @@ class WorkflowDraft:
             scope=workflow.scope,
             recurse=workflow.recurse,
             steps=[
-                WorkflowStep(module=step.module, params=dict(step.params), name=step.name)
-                for step in workflow.steps
+                WorkflowStep(module=step.module, params=dict(step.params), name=step.name) for step in workflow.steps
             ],
             source_path=workflow.source_path,
         )
@@ -222,13 +219,17 @@ class WorkflowDraft:
     def update_step_name(self, index: int, name: str) -> None:
         current = self.steps[index]
         self.steps[index] = WorkflowStep(
-            module=current.module, params=dict(current.params), name=name.strip(),
+            module=current.module,
+            params=dict(current.params),
+            name=name.strip(),
         )
 
     def update_step_params(self, index: int, params: Mapping[str, Any]) -> None:
         current = self.steps[index]
         self.steps[index] = WorkflowStep(
-            module=current.module, params=dict(params), name=current.name,
+            module=current.module,
+            params=dict(params),
+            name=current.name,
         )
 
     def to_workflow_definition(self) -> WorkflowDefinition:

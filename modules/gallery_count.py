@@ -5,14 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-
 MODULE_META = {
     "slug": "gallery-count",
     "name": "Gallery 统计计数",
     "core_version": "2.0.0",
     "tags": ["gallery", "count", "statistics"],
     "atom": ["folder"],
-    "description": "扫描文件夹顶层文件，忽略图片，统计视频和其他文件数量，在文件夹名后追加 [1V 2PDF 3GIF] 格式的计数标签。",
+    "description": "扫描文件夹顶层文件，忽略图片，统计视频和其他文件数量，在文件夹名后追加 [1V 2PDF 3GIF] 格式的计数标签。",  # noqa: E501
 }
 
 CONFIG_SCHEMA = {
@@ -34,7 +33,7 @@ CONFIG_SCHEMA = {
 }
 
 
-def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     working_dir = Path(ctx.working_path)
     if not working_dir.is_dir():
         runtime.log("gallery-count", "error", "working_path 不是目录。")
@@ -81,7 +80,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
 
     if new_dir.exists():
         runtime.log(
-            "gallery-count", "error",
+            "gallery-count",
+            "error",
             f"目标路径已存在: {new_dir}",
             {"target": str(new_dir)},
         )
@@ -91,7 +91,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
         working_dir.rename(new_dir)
     except OSError as e:
         runtime.log(
-            "gallery-count", "error",
+            "gallery-count",
+            "error",
             f"重命名文件夹失败: {e}",
             {"source": str(working_dir), "target": str(new_dir)},
         )
@@ -99,7 +100,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
 
     new_ctx = ctx.clone(working_path=new_dir)
     runtime.log(
-        "gallery-count", "success",
+        "gallery-count",
+        "success",
         f"已追加计数标签: {suffix}",
         {"suffix": suffix, "video_count": video_count, "other_counts": dict(other_counts)},
     )

@@ -7,14 +7,13 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-
 MODULE_META = {
     "slug": "ffmpeg-merge",
     "name": "FFmpeg 合并 m3u8",
     "core_version": "2.0.0",
     "tags": ["ffmpeg", "merge", "m3u8", "hls", "download"],
     "atom": ["file", "line"],
-    "description": "使用 FFmpeg 下载并合并 m3u8/m3u/HLS 播放列表为单个文件，支持自定义 HTTP 请求头、断线重连、AES-128 解密。",
+    "description": "使用 FFmpeg 下载并合并 m3u8/m3u/HLS 播放列表为单个文件，支持自定义 HTTP 请求头、断线重连、AES-128 解密。",  # noqa: E501
 }
 
 CONFIG_SCHEMA = {
@@ -92,7 +91,7 @@ CONFIG_SCHEMA = {
             "type": "str",
             "title": "附加请求头",
             "default": "",
-            "description": "每行一个 \"Key: Value\" 格式的附加 HTTP 请求头。",
+            "description": '每行一个 "Key: Value" 格式的附加 HTTP 请求头。',
             "placeholder": "X-Custom: value\nX-Forwarded-For: 1.2.3.4",
         },
         "reconnect": {
@@ -121,7 +120,7 @@ CONFIG_SCHEMA = {
             "type": "str",
             "title": "AES-128 解密密钥",
             "default": "",
-            "description": "AES-128 解密密钥。填写 32 位十六进制字符串（如 0123...ef）则不重编码，留空则自动处理 m3u8 内置密钥。",
+            "description": "AES-128 解密密钥。填写 32 位十六进制字符串（如 0123...ef）则不重编码，留空则自动处理 m3u8 内置密钥。",  # noqa: E501
             "placeholder": "32 位十六进制字符串",
         },
         "overwrite": {
@@ -133,9 +132,12 @@ CONFIG_SCHEMA = {
     },
 }
 
-_SUPPORTED_EXTENSIONS = frozenset({
-    ".m3u8", ".m3u",
-})
+_SUPPORTED_EXTENSIONS = frozenset(
+    {
+        ".m3u8",
+        ".m3u",
+    }
+)
 
 _SOFTWARE_CODECS = {
     "h264": "libx264",
@@ -161,7 +163,7 @@ def _resolve_ffmpeg_path(cfg: dict) -> str | None:
     return None
 
 
-def _resolve_input(ctx: "Any") -> str | None:
+def _resolve_input(ctx: Any) -> str | None:
     if ctx.atom == "line":
         line = ctx.shared.get("input_line", "").strip()
         return line if line else None
@@ -224,10 +226,14 @@ def _build_reconnect_args(cfg: dict) -> list[str]:
         return []
     delay = cfg.get("reconnect_delay", 5)
     return [
-        "-reconnect", "1",
-        "-reconnect_at_eof", "1",
-        "-reconnect_streamed", "1",
-        "-reconnect_delay_max", str(delay),
+        "-reconnect",
+        "1",
+        "-reconnect_at_eof",
+        "1",
+        "-reconnect_streamed",
+        "1",
+        "-reconnect_delay_max",
+        str(delay),
     ]
 
 
@@ -244,14 +250,19 @@ def _build_key_args(cfg: dict) -> list[str] | None:
 
 
 def _key_info_from_hex(hex_key: str) -> list[str]:
-    key_bytes = bytes.fromhex(hex_key)
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".key", delete=False, encoding="ascii",
+        mode="w",
+        suffix=".key",
+        delete=False,
+        encoding="ascii",
     ) as tf:
         tf.write(hex_key)
         key_file = tf.name
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".keyinfo", delete=False, encoding="ascii",
+        mode="w",
+        suffix=".keyinfo",
+        delete=False,
+        encoding="ascii",
     ) as tf:
         tf.write(f"file:{key_file}\n{key_file}\n")
         info_file = tf.name
@@ -297,7 +308,7 @@ def _build_command(
     return cmd
 
 
-def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     source = _resolve_input(ctx)
     if not source:
         runtime.log("ffmpeg-merge", "message", "无输入源，跳过。")
@@ -307,7 +318,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
         wp = Path(ctx.working_path)
         if not wp.is_file() or wp.suffix.lower() not in _SUPPORTED_EXTENSIONS:
             runtime.log(
-                "ffmpeg-merge", "message",
+                "ffmpeg-merge",
+                "message",
                 f"不支持的文件类型，仅接受 {', '.join(sorted(_SUPPORTED_EXTENSIONS))}。",
             )
             return ctx
@@ -315,7 +327,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
     ffmpeg = _resolve_ffmpeg_path(cfg)
     if ffmpeg is None:
         runtime.log(
-            "ffmpeg-merge", "error",
+            "ffmpeg-merge",
+            "error",
             "FFmpeg 未找到，请配置路径或将 ffmpeg.exe 放置到 resources/ffmpeg/ 下。",
         )
         return ctx
@@ -328,20 +341,18 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
     cmd = _build_command(source, str(output_file), cfg)
 
     runtime.log(
-        "ffmpeg-merge", "hint",
+        "ffmpeg-merge",
+        "hint",
         f"FFmpeg 命令行: {' '.join(cmd)}",
     )
     runtime.log(
-        "ffmpeg-merge", "message",
+        "ffmpeg-merge",
+        "message",
         f"开始合并: {source} → {output_file.name}",
     )
 
     try:
-        cwd = (
-            str(Path(source).parent)
-            if ctx.atom == "file" and Path(source).exists()
-            else str(output_dir)
-        )
+        cwd = str(Path(source).parent) if ctx.atom == "file" and Path(source).exists() else str(output_dir)
         result = runtime.spawn(cmd, cwd=cwd)
     except OSError as e:
         runtime.log("ffmpeg-merge", "error", f"FFmpeg 启动失败: {e}")
@@ -350,13 +361,15 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
     if result.is_success:
         ctx.track_extra_file(output_file)
         runtime.log(
-            "ffmpeg-merge", "success",
+            "ffmpeg-merge",
+            "success",
             f"合并完成: {output_file.name}",
             {"output_file": str(output_file), "source": source},
         )
     else:
         runtime.log(
-            "ffmpeg-merge", "error",
+            "ffmpeg-merge",
+            "error",
             f"FFmpeg 返回非零退出码: {result.exit_code}",
             {"source": source},
         )

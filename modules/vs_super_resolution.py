@@ -89,10 +89,22 @@ CONFIG_SCHEMA = {
     },
 }
 
-_VIDEO_EXTENSIONS = frozenset({
-    ".mp4", ".mkv", ".avi", ".mov", ".webm", ".ts",
-    ".m4v", ".flv", ".wmv", ".m2ts", ".vob", ".y4m",
-})
+_VIDEO_EXTENSIONS = frozenset(
+    {
+        ".mp4",
+        ".mkv",
+        ".avi",
+        ".mov",
+        ".webm",
+        ".ts",
+        ".m4v",
+        ".flv",
+        ".wmv",
+        ".m2ts",
+        ".vob",
+        ".y4m",
+    }
+)
 
 
 def _resolve_vspipe_path(cfg: dict) -> str | None:
@@ -166,37 +178,37 @@ def _generate_vpy_script(
     lines.append("import vapoursynth as vs")
     lines.append("from vapoursynth import core")
     lines.append("")
-    lines.append(f"core.std.LoadPlugin(r\"{plugin_escaped}\")")
+    lines.append(f'core.std.LoadPlugin(r"{plugin_escaped}")')
     lines.append("")
-    lines.append(f"src = core.ffms2.Source(r\"{input_escaped}\")")
+    lines.append(f'src = core.ffms2.Source(r"{input_escaped}")')
     lines.append("")
 
     if gpu:
         lines.append(f"# ML 超分: {scale_factor} ({model_name})")
-        lines.append(f"src = core.resize.Bicubic(src, format=vs.RGBS)")
-        lines.append(f"sr = core.mlrt.SR(src,")
-        lines.append(f"    model_path=r\"{model_full}\",")
+        lines.append("src = core.resize.Bicubic(src, format=vs.RGBS)")
+        lines.append("sr = core.mlrt.SR(src,")
+        lines.append(f'    model_path=r"{model_full}",')
         lines.append(f"    scale={scale},")
         lines.append(f"    gpu_id={gpu_id},")
         if denoise_strength > 0:
             lines.append(f"    denoise_strength={denoise_strength:.2f},")
-        lines.append(f")")
+        lines.append(")")
     else:
         lines.append(f"# ML 超分 (CPU): {scale_factor} ({model_name})")
-        lines.append(f"src = core.resize.Bicubic(src, format=vs.RGBS)")
-        lines.append(f"sr = core.mlrt.SR(src,")
-        lines.append(f"    model_path=r\"{model_full}\",")
+        lines.append("src = core.resize.Bicubic(src, format=vs.RGBS)")
+        lines.append("sr = core.mlrt.SR(src,")
+        lines.append(f'    model_path=r"{model_full}",')
         lines.append(f"    scale={scale},")
-        lines.append(f"    gpu_id=-1,")
-        lines.append(f")")
+        lines.append("    gpu_id=-1,")
+        lines.append(")")
 
     lines.append("")
 
     if output_format in ("png-sequence", "jpg-sequence"):
         fmt = "PNG" if output_format == "png-sequence" else "JPEG"
         subfolder = f"{stem}_sr_frames"
-        lines.append(f"# 输出帧序列到子文件夹")
-        lines.append(f"sr = core.imwri.Write(sr, \"{fmt}\", r\"{output_escaped}\\\\{subfolder}\\\\%06d.png\")")
+        lines.append("# 输出帧序列到子文件夹")
+        lines.append(f'sr = core.imwri.Write(sr, "{fmt}", r"{output_escaped}\\\\{subfolder}\\\\%06d.png")')
 
     lines.append("sr.set_output()")
 
@@ -204,19 +216,21 @@ def _generate_vpy_script(
     Path(script_path).write_text(script_content, encoding="utf-8")
 
 
-def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     working_path = Path(ctx.working_path)
     output_dir = Path(ctx.output_dir)
 
     if working_path.is_dir():
         runtime.log(
-            "vs-super-resolution", "message",
+            "vs-super-resolution",
+            "message",
             "输入为目录 (帧序列)。",
         )
     elif working_path.is_file():
         if working_path.suffix.lower() not in _VIDEO_EXTENSIONS:
             runtime.log(
-                "vs-super-resolution", "message",
+                "vs-super-resolution",
+                "message",
                 f"不支持的视频格式: {working_path.suffix}，跳过。",
             )
             return ctx
@@ -227,7 +241,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
     vspipe = _resolve_vspipe_path(cfg)
     if vspipe is None:
         runtime.log(
-            "vs-super-resolution", "error",
+            "vs-super-resolution",
+            "error",
             "VSPipe.exe 未找到。请配置 vspipe_path 或运行 resources/install_vapoursynth.ps1 安装 VapourSynth。",
         )
         return ctx
@@ -235,8 +250,9 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
     plugin_path_str = _resolve_vsmlrt_plugin()
     if plugin_path_str is None:
         runtime.log(
-            "vs-super-resolution", "error",
-            "vsmlrt.dll 未找到。请运行 resources/install_vsmlrt.ps1 安装 vs-mlrt 插件，或将 vsmlrt.dll 放入 resources/ 下任意位置。",
+            "vs-super-resolution",
+            "error",
+            "vsmlrt.dll 未找到。请运行 resources/install_vsmlrt.ps1 安装 vs-mlrt 插件，或将 vsmlrt.dll 放入 resources/ 下任意位置。",  # noqa: E501
         )
         return ctx
     plugin_path = Path(plugin_path_str)
@@ -244,7 +260,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
     model_dir = _resolve_model_dir(cfg)
     if model_dir is None:
         runtime.log(
-            "vs-super-resolution", "error",
+            "vs-super-resolution",
+            "error",
             "模型目录未找到，请运行 resources/install_vsmlrt.ps1 下载模型，或配置 model_path。",
         )
         return ctx
@@ -276,7 +293,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
 
     runtime.log("vs-super-resolution", "hint", f"VSPipe 脚本已生成: {script_path}")
     runtime.log(
-        "vs-super-resolution", "message",
+        "vs-super-resolution",
+        "message",
         f"开始超分: {working_path.name} (模型: {model_name}, 倍数: {scale_factor})...",
     )
 
@@ -302,7 +320,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
 
     if not result.is_success:
         runtime.log(
-            "vs-super-resolution", "error",
+            "vs-super-resolution",
+            "error",
             f"VSPipe 返回非零退出码: {result.exit_code}",
         )
         return ctx
@@ -313,20 +332,23 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
         if frame_dir.exists():
             ctx.track_extra_file(frame_dir)
             runtime.log(
-                "vs-super-resolution", "success",
+                "vs-super-resolution",
+                "success",
                 f"超分完成，帧序列输出到: {frame_dir}",
             )
             return ctx.clone(working_path=frame_dir)
         else:
             runtime.log(
-                "vs-super-resolution", "error",
+                "vs-super-resolution",
+                "error",
                 f"帧序列子文件夹未创建: {frame_dir}",
             )
             return ctx
 
     ctx.track_extra_file(output_path)
     runtime.log(
-        "vs-super-resolution", "success",
+        "vs-super-resolution",
+        "success",
         f"超分完成: {output_path.name}",
         {"output_path": str(output_path)},
     )

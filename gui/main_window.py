@@ -13,7 +13,7 @@ from pathlib import Path
 from threading import Event
 from typing import Any
 
-from PySide6.QtCore import QObject, QSettings, QThread, QTimer, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QSettings, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QAbstractButton,
     QButtonGroup,
@@ -124,30 +124,43 @@ class ExecutionWorker(QObject):
             self.finished.emit(summary)
         except Exception as exc:
             self.log_message.emit(f"执行失败: {exc}")
-            self.finished.emit({
-                "success": False, "cancelled": False,
-                "errors": [{"error": str(exc)}],
-                "error": str(exc),
-            })
+            self.finished.emit(
+                {
+                    "success": False,
+                    "cancelled": False,
+                    "errors": [{"error": str(exc)}],
+                    "error": str(exc),
+                }
+            )
         finally:
             runtime.close()
 
     def _on_executor_event(self, event: PipelineEvent) -> None:
-        if event.slug == "executor" and event.text.startswith("start unit ["):
-            self.unit_status.emit(0, "processing")
-        elif event.slug == "executor" and event.text.startswith("unit ok ["):
-            self.unit_status.emit(0, "completed")
-        elif event.slug == "executor" and event.text.startswith("unit failed ["):
-            self.unit_status.emit(0, "failed")
+        if event.slug == "executor":
+            idx = 0
+            try:
+                bracket = event.text.find("[")
+                slash = event.text.find("/", bracket)
+                if bracket >= 0 and slash > bracket:
+                    idx = int(event.text[bracket + 1 : slash]) - 1
+            except (ValueError, IndexError):
+                pass
+            if event.text.startswith("start unit ["):
+                self.unit_status.emit(idx, "processing")
+            elif event.text.startswith("unit ok ["):
+                self.unit_status.emit(idx, "completed")
+            elif event.text.startswith("unit failed ["):
+                self.unit_status.emit(idx, "failed")
         if event.slug == "terminal":
             if event.text.startswith("terminal:"):
-                self.terminal_event.emit(
-                    {"type": event.text, **event.data}, self._runtime
-                )
+                self.terminal_event.emit({"type": event.text, **event.data}, self._runtime)
             return
         prefix = {
-            "success": "[OK]", "message": "[INFO]", "hint": "[HINT]",
-            "warning": "[WARN]", "error": "[ERROR]",
+            "success": "[OK]",
+            "message": "[INFO]",
+            "hint": "[HINT]",
+            "warning": "[WARN]",
+            "error": "[ERROR]",
         }.get(event.type, "[LOG]")
         self.log_message.emit(f"{prefix} [{event.slug}] {event.text}")
 
@@ -182,6 +195,7 @@ class MainWindow(QMainWindow):
         self._log_timer.setSingleShot(True)
         self._log_timer.setInterval(50)
         self._log_timer.timeout.connect(self._flush_log_buffer)
+        self._watchdog_timer: QTimer | None = None
 
         self.setWindowTitle("Shell Worker Platform")
         self.resize(680, 920)
@@ -241,8 +255,7 @@ class MainWindow(QMainWindow):
         config_layout.addLayout(mode_row)
 
         self._direct_warning_label = QLabel(
-            f'<span style="color:{UIColors.WARNING};font-weight:bold;">'
-            '警告：将直接修改原始文件！</span>'
+            f'<span style="color:{UIColors.WARNING};font-weight:bold;">警告：将直接修改原始文件！</span>'
         )
         self._direct_warning_label.setVisible(False)
         config_layout.addWidget(self._direct_warning_label)
@@ -445,12 +458,9 @@ class MainWindow(QMainWindow):
         self._current_workflow = workflow
         self._settings.setValue("last_workflow_path", str(summary.path))
         self.workflow_atom_label.setText(
-            f"atom：{workflow.atom} | scope：{workflow.scope} | "
-            f"recurse：{workflow.recurse}"
+            f"atom：{workflow.atom} | scope：{workflow.scope} | recurse：{workflow.recurse}"
         )
-        self.workflow_steps_label.setText(
-            f"步骤数：{len(workflow.steps)} | 文件：{summary.filename}"
-        )
+        self.workflow_steps_label.setText(f"步骤数：{len(workflow.steps)} | 文件：{summary.filename}")
         self.workflow_desc_label.setText(workflow.meta.description or "暂无描述")
         self._update_input_controls()
         self._update_action_buttons()
@@ -548,8 +558,7 @@ class MainWindow(QMainWindow):
             self._update_action_buttons()
 
     def _choose_log_file(self) -> None:
-        selected, _ = QFileDialog.getSaveFileName(self, "选择日志文件",
-                                                   "", "JSONL Files (*.jsonl *.log)")
+        selected, _ = QFileDialog.getSaveFileName(self, "选择日志文件", "", "JSONL Files (*.jsonl *.log)")
         if selected:
             self.log_file_input.setText(str(Path(selected).resolve()))
 
@@ -577,10 +586,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("当前工作流不需要输入。")
             return
 
-        existing = {
-            self.input_list.item(index).data(Qt.UserRole)
-            for index in range(self.input_list.count())
-        }
+        existing = {self.input_list.item(index).data(Qt.UserRole) for index in range(self.input_list.count())}
         added_count = 0
         invalid_paths: list[str] = []
 
@@ -603,9 +609,10 @@ class MainWindow(QMainWindow):
         if added_count:
             self.statusBar().showMessage(f"已添加 {added_count} 个输入。")
         if invalid_paths:
-            QMessageBox.warning(self, "部分输入未添加",
-                "以下输入无效已跳过：\n" + "\n".join(invalid_paths[:10])
-                + ("\n…" if len(invalid_paths) > 10 else "")
+            QMessageBox.warning(
+                self,
+                "部分输入未添加",
+                "以下输入无效已跳过：\n" + "\n".join(invalid_paths[:10]) + ("\n…" if len(invalid_paths) > 10 else ""),
             )
         self._update_action_buttons()
 
@@ -624,13 +631,9 @@ class MainWindow(QMainWindow):
         self._update_action_buttons()
 
     def _collect_inputs(self) -> list[str]:
-        return [
-            self.input_list.item(index).data(Qt.UserRole)
-            for index in range(self.input_list.count())
-        ]
+        return [self.input_list.item(index).data(Qt.UserRole) for index in range(self.input_list.count())]
 
     def _start_execution(self) -> None:
-        self.execute_button.setEnabled(False)
         workflow = self._current_workflow
         if workflow is None:
             QMessageBox.warning(self, "无法执行", "请先选择一个有效工作流。")
@@ -647,6 +650,19 @@ class MainWindow(QMainWindow):
         if workflow.atom == "line" and not lines_text.strip():
             QMessageBox.warning(self, "无法执行", "请输入至少一行文本任务。")
             return
+
+        if self._direct_mode:
+            reply = QMessageBox.question(
+                self,
+                "直接模式确认",
+                "直接模式将直接操作原始文件（不可逆）。\n\n确定要继续执行吗？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        self.execute_button.setEnabled(False)
 
         self.output_dir_input.setText(output_dir)
         self.log_output.clear()
@@ -690,6 +706,11 @@ class MainWindow(QMainWindow):
         self._worker_thread = thread
         self._set_running_state(True)
         thread.start()
+
+        self._watchdog_timer = QTimer(self)
+        self._watchdog_timer.setSingleShot(True)
+        self._watchdog_timer.timeout.connect(self._on_watchdog_timeout)
+        self._watchdog_timer.start(5 * 60 * 1000)
 
     def _resolve_output_dir(self) -> str:
         text = self.output_dir_input.text().strip()
@@ -765,12 +786,10 @@ class MainWindow(QMainWindow):
             f'border-left:3px solid {accent};">'
             f'<span style="color:#95a5a6;font-size:9pt;">[{timestamp}]</span> '
             f'<span style="color:{accent};{style}">{escaped}</span>'
-            f'</div>'
+            f"</div>"
         )
         self.log_output.append(html)
-        self.log_output.verticalScrollBar().setValue(
-            self.log_output.verticalScrollBar().maximum()
-        )
+        self.log_output.verticalScrollBar().setValue(self.log_output.verticalScrollBar().maximum())
 
     def _on_terminal_event(self, payload: dict, runtime: object) -> None:
         event_type = payload.get("type", "")
@@ -781,11 +800,8 @@ class MainWindow(QMainWindow):
 
         if event_type == "terminal:started":
             command = payload.get("command", "")
-            win = TerminalWindow(session_id, command,
-                                 runtime=self._worker_runtime, parent=self)
-            win.destroyed.connect(
-                lambda sid=session_id: self._terminal_windows.pop(sid, None)
-            )
+            win = TerminalWindow(session_id, command, runtime=self._worker_runtime, parent=self)
+            win.destroyed.connect(lambda sid=session_id: self._terminal_windows.pop(sid, None))
             win.show()
             self._terminal_windows[session_id] = win
         elif event_type == "terminal:output":
@@ -840,9 +856,7 @@ class MainWindow(QMainWindow):
         if summary.get("success"):
             self.progress_bar.setValue(100)
             self.statusBar().showMessage("执行完成")
-            self._append_log(
-                f"执行完成：处理了 {summary.get('processed_units', 0)} 个单元。"
-            )
+            self._append_log(f"执行完成：处理了 {summary.get('processed_units', 0)} 个单元。")
             return
         self.statusBar().showMessage("执行结束，存在失败项")
         self._append_log(
@@ -851,8 +865,20 @@ class MainWindow(QMainWindow):
             f"{summary.get('failed_units', 0)}。"
         )
 
+    def _on_watchdog_timeout(self) -> None:
+        if self._worker is not None:
+            self._append_log("执行超时 (5分钟)，强制终止工作线程。")
+            self._worker.request_stop()
+        thread = self._worker_thread
+        if thread is not None and thread.isRunning():
+            thread.terminate()
+            thread.wait(3000)
+
     def _cleanup_worker(self) -> None:
         self._worker = None
         self._worker_thread = None
         self._worker_runtime = None
+        if self._watchdog_timer is not None:
+            self._watchdog_timer.stop()
+            self._watchdog_timer = None
         self._update_action_buttons()

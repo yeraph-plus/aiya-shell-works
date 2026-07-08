@@ -33,7 +33,7 @@ CONFIG_SCHEMA = {
             "title": "去隔行方法",
             "options": ["bwdif", "vivtc"],
             "default": "bwdif",
-            "description": "BWDIF: 双倍帧率自适应去隔行 (快速，需要内置插件)。VIVTC: 反胶卷过带 IVTC (用于 3:2 pulldown 素材)。",
+            "description": "BWDIF: 双倍帧率自适应去隔行 (快速，需要内置插件)。VIVTC: 反胶卷过带 IVTC (用于 3:2 pulldown 素材)。",  # noqa: E501
         },
         "double_rate": {
             "type": "bool",
@@ -65,10 +65,22 @@ CONFIG_SCHEMA = {
     },
 }
 
-_VIDEO_EXTENSIONS = frozenset({
-    ".mp4", ".mkv", ".avi", ".mov", ".webm", ".ts",
-    ".m4v", ".flv", ".wmv", ".m2ts", ".vob", ".y4m",
-})
+_VIDEO_EXTENSIONS = frozenset(
+    {
+        ".mp4",
+        ".mkv",
+        ".avi",
+        ".mov",
+        ".webm",
+        ".ts",
+        ".m4v",
+        ".flv",
+        ".wmv",
+        ".m2ts",
+        ".vob",
+        ".y4m",
+    }
+)
 
 
 def _resolve_vspipe_path(cfg: dict) -> str | None:
@@ -108,7 +120,7 @@ def _generate_vpy_script(
     lines.append("import vapoursynth as vs")
     lines.append("from vapoursynth import core")
     lines.append("")
-    lines.append(f"src = core.ffms2.Source(r\"{input_escaped}\")")
+    lines.append(f'src = core.ffms2.Source(r"{input_escaped}")')
     lines.append("")
 
     if method == "bwdif":
@@ -127,8 +139,8 @@ def _generate_vpy_script(
     if output_format in ("png-sequence", "jpg-sequence"):
         fmt = "PNG" if output_format == "png-sequence" else "JPEG"
         subfolder = f"{stem}_deinterlace_frames"
-        lines.append(f"# 输出帧序列到子文件夹")
-        lines.append(f"deint = core.imwri.Write(deint, \"{fmt}\", r\"{output_escaped}\\\\{subfolder}\\\\%06d.png\")")
+        lines.append("# 输出帧序列到子文件夹")
+        lines.append(f'deint = core.imwri.Write(deint, "{fmt}", r"{output_escaped}\\\\{subfolder}\\\\%06d.png")')
 
     lines.append("deint.set_output()")
 
@@ -136,7 +148,7 @@ def _generate_vpy_script(
     Path(script_path).write_text(script_content, encoding="utf-8")
 
 
-def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     working_path = Path(ctx.working_path)
     output_dir = Path(ctx.output_dir)
 
@@ -146,7 +158,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
 
     if working_path.suffix.lower() not in _VIDEO_EXTENSIONS:
         runtime.log(
-            "vs-deinterlace", "message",
+            "vs-deinterlace",
+            "message",
             f"不支持的视频格式: {working_path.suffix}，跳过。支持的格式: {', '.join(sorted(_VIDEO_EXTENSIONS))}",
         )
         return ctx
@@ -154,7 +167,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
     vspipe = _resolve_vspipe_path(cfg)
     if vspipe is None:
         runtime.log(
-            "vs-deinterlace", "error",
+            "vs-deinterlace",
+            "error",
             "VSPipe.exe 未找到。请配置 vspipe_path 或运行 resources/install_vapoursynth.ps1 安装 VapourSynth。",
         )
         return ctx
@@ -179,11 +193,13 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
     )
 
     runtime.log(
-        "vs-deinterlace", "hint",
+        "vs-deinterlace",
+        "hint",
         f"VSPipe 脚本已生成: {script_path}",
     )
     runtime.log(
-        "vs-deinterlace", "message",
+        "vs-deinterlace",
+        "message",
         f"开始去隔行: {working_path.name} (方法: {method}, 输出: {output_format})...",
     )
 
@@ -209,7 +225,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
 
     if not result.is_success:
         runtime.log(
-            "vs-deinterlace", "error",
+            "vs-deinterlace",
+            "error",
             f"VSPipe 返回非零退出码: {result.exit_code}",
         )
         return ctx
@@ -220,20 +237,23 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
         if frame_dir.exists():
             ctx.track_extra_file(frame_dir)
             runtime.log(
-                "vs-deinterlace", "success",
+                "vs-deinterlace",
+                "success",
                 f"去隔行完成，帧序列输出到: {frame_dir}",
             )
             return ctx.clone(working_path=frame_dir)
         else:
             runtime.log(
-                "vs-deinterlace", "error",
+                "vs-deinterlace",
+                "error",
                 f"帧序列子文件夹未创建: {frame_dir}",
             )
             return ctx
 
     ctx.track_extra_file(output_path)
     runtime.log(
-        "vs-deinterlace", "success",
+        "vs-deinterlace",
+        "success",
         f"去隔行完成: {output_path.name}",
         {"output_path": str(output_path)},
     )

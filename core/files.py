@@ -26,10 +26,10 @@ from .context import PipelineContext
 from .exceptions import FileHandlingError
 from .input import InputPlan
 
-
 # ---------------------------------------------------------------------------
 # Unit dicts: lightweight data carrier consumed by executor._prepare_context
 # ---------------------------------------------------------------------------
+
 
 def build_path_units(paths: list[Path], *, recurse: bool) -> list[dict[str, Any]]:
     """Return one unit dict per processing unit, given raw input paths.
@@ -66,6 +66,7 @@ def build_lines_units(lines: list[str]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # WorkingCopier: unit-tree-builder + working-copy preparation
 # ---------------------------------------------------------------------------
+
 
 class WorkingCopier:
     """Make working copies (or direct references) for processing units.
@@ -151,9 +152,7 @@ class WorkingCopier:
                 # In direct mode we cannot merge disjoint originals into a single
                 # working tree without copying; reversible merge would require
                 # a temp dir.  Refuse to keep semantics unambiguous.
-                raise FileHandlingError(
-                    "scope=0 与 direct_mode 不兼容：shared 需要 output_dir 形成合并树。"
-                )
+                raise FileHandlingError("scope=0 与 direct_mode 不兼容：shared 需要 output_dir 形成合并树。")
             try:
                 if p.is_file():
                     rel = Path(p.name)
@@ -204,9 +203,7 @@ class WorkingCopier:
         try:
             return source.relative_to(source_root)
         except ValueError as exc:
-            raise FileHandlingError(
-                f"文件 {source} 不在 source_root {source_root} 内，无法保持相对路径。"
-            ) from exc
+            raise FileHandlingError(f"文件 {source} 不在 source_root {source_root} 内，无法保持相对路径。") from exc
 
     @staticmethod
     def _make_unique_path(target: Path) -> Path:
@@ -239,6 +236,7 @@ class WorkingCopier:
 # ---------------------------------------------------------------------------
 # Convenience: dispatch from InputPlan to units + context shape
 # ---------------------------------------------------------------------------
+
 
 def units_from_plan(plan: InputPlan) -> list[dict[str, Any]]:
     """Pure unit construction from a plan — no filesystem copy yet."""

@@ -7,13 +7,11 @@ lives on the module manager side.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
-
-SUPPORTED_CONFIG_TYPES = frozenset(
-    {"int", "float", "str", "bool", "select", "radio", "file_path", "folder_path"}
-)
+SUPPORTED_CONFIG_TYPES = frozenset({"int", "float", "str", "bool", "select", "radio", "file_path", "folder_path"})
 
 _MISSING = object()
 
@@ -54,9 +52,7 @@ def validate_config_schema(schema: Any) -> tuple[bool, tuple[str, ...]]:
     required_names: set[str] = set()
     if required in (None, []):
         required_names = set()
-    elif isinstance(required, list) and all(
-        isinstance(item, str) and item.strip() for item in required
-    ):
+    elif isinstance(required, list) and all(isinstance(item, str) and item.strip() for item in required):
         required_names = {item.strip() for item in required}
     else:
         errors.append("CONFIG_SCHEMA.required 必须是非空字符串列表。")
@@ -100,8 +96,10 @@ def validate_config_schema(schema: Any) -> tuple[bool, tuple[str, ...]]:
                 if maximum is not _MISSING and not _is_number(maximum):
                     errors.append(f"{prefix}.max 必须是数字。")
                 if (
-                    minimum is not _MISSING and maximum is not _MISSING
-                    and _is_number(minimum) and _is_number(maximum)
+                    minimum is not _MISSING
+                    and maximum is not _MISSING
+                    and _is_number(minimum)
+                    and _is_number(maximum)
                     and minimum > maximum
                 ):
                     errors.append(f"{prefix}.min 不能大于 max。")
@@ -135,11 +133,7 @@ def normalize_config_params(
         raise ConfigValidationError(["步骤参数必须是字典。"])
 
     properties = dict(schema.get("properties", {}))
-    top_required = {
-        name.strip()
-        for name in schema.get("required", [])
-        if isinstance(name, str) and name.strip()
-    }
+    top_required = {name.strip() for name in schema.get("required", []) if isinstance(name, str) and name.strip()}
     errors: list[str] = []
     normalized: dict[str, Any] = {}
 
@@ -201,17 +195,13 @@ def _validate_single_value(
             for item in field_schema.get("options", [])
         }
         if value not in valid:
-            raise ConfigValidationError(
-                [f"参数 {field_name} 必须是以下选项之一: {sorted(valid)}。"]
-            )
+            raise ConfigValidationError([f"参数 {field_name} 必须是以下选项之一: {sorted(valid)}。"])
         return value
     if field_type in {"file_path", "folder_path"}:
         if isinstance(value, Path):
             return str(value)
         if not isinstance(value, str):
-            raise ConfigValidationError(
-                [f"参数 {field_name} 必须是路径字符串。"]
-            )
+            raise ConfigValidationError([f"参数 {field_name} 必须是路径字符串。"])
         return value
     raise ConfigValidationError([f"参数 {field_name} 使用了不支持的类型: {field_type}。"])
 

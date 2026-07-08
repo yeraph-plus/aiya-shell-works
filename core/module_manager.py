@@ -9,12 +9,13 @@ Each ``modules/<name>.py`` must expose three module-level objects:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import logging
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable
+from typing import Any
 
 from .config_schema import validate_config_schema
 
@@ -142,30 +143,25 @@ class ModuleManager:
             return None
 
         raw_tags = meta.get("tags", [])
-        if not isinstance(raw_tags, list) or not all(
-            isinstance(t, str) and t.strip() for t in raw_tags
-        ):
+        if not isinstance(raw_tags, list) or not all(isinstance(t, str) and t.strip() for t in raw_tags):
             self._warn(f"MODULE_META.tags 必须是非空字符串列表，已忽略: {path}")
             return None
         tags = tuple(t.strip() for t in raw_tags)
 
         raw_atom = meta.get("atom", [])
         if (
-            not isinstance(raw_atom, list) or not raw_atom
+            not isinstance(raw_atom, list)
+            or not raw_atom
             or not all(isinstance(a, str) and a in VALID_ATOMS for a in raw_atom)
         ):
-            self._warn(
-                f"MODULE_META.atom 必须是非空列表且值在 "
-                f"{'/'.join(VALID_ATOMS)} 中，已忽略: {path}"
-            )
+            self._warn(f"MODULE_META.atom 必须是非空列表且值在 {'/'.join(VALID_ATOMS)} 中，已忽略: {path}")
             return None
         atom = tuple(raw_atom)
 
         raw_scope = meta.get("scope", 1)
         if not isinstance(raw_scope, int) or raw_scope not in VALID_SCOPES:
             self._warn(
-                f"MODULE_META.scope 必须是整数且值在 "
-                f"{'/'.join(str(s) for s in VALID_SCOPES)} 中，已忽略: {path}"
+                f"MODULE_META.scope 必须是整数且值在 {'/'.join(str(s) for s in VALID_SCOPES)} 中，已忽略: {path}"
             )
             return None
         scope = raw_scope
@@ -183,9 +179,7 @@ class ModuleManager:
             return None
         valid_schema, schema_errors = validate_config_schema(schema)
         if not valid_schema:
-            self._warn(
-                f"CONFIG_SCHEMA 不符合规格，已忽略: {path} ({'；'.join(schema_errors)})"
-            )
+            self._warn(f"CONFIG_SCHEMA 不符合规格，已忽略: {path} ({'；'.join(schema_errors)})")
             return None
 
         run = getattr(module, "run", None)
@@ -210,10 +204,7 @@ class ModuleManager:
     def _validate_parents(self) -> None:
         for slug, definition in self._cache.items():
             if definition.parent and definition.parent not in self._cache:
-                self._warn(
-                    f"模块 '{slug}' 声明的 parent '{definition.parent}' "
-                    f"不存在于已扫描的模块中。"
-                )
+                self._warn(f"模块 '{slug}' 声明的 parent '{definition.parent}' 不存在于已扫描的模块中。")
 
     def _warn(self, message: str) -> None:
         self._warnings.append(message)

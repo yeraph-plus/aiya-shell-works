@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-
 MODULE_META = {
     "slug": "flatten-folder",
     "name": "递归提取文件",
@@ -70,7 +69,7 @@ def _assign_children(
         _assign_children(child, root, prefix_map, start_index=1)
 
 
-def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     working_dir = Path(ctx.working_path)
     if not working_dir.is_dir():
         runtime.log("flatten-folder", "error", "working_path 不是目录。")
@@ -105,7 +104,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
             except OSError as e:
                 failed += 1
                 runtime.log(
-                    "flatten-folder", "error",
+                    "flatten-folder",
+                    "error",
                     f"移动失败: {f.name} ({e})",
                 )
 
@@ -124,9 +124,9 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
 
     if moved > 0:
         runtime.log(
-            "flatten-folder", "message",
-            f"提取完成: {moved} 个文件已移至根目录, {failed} 个失败, "
-            f"已清理 {removed_dirs} 个空子目录。",
+            "flatten-folder",
+            "message",
+            f"提取完成: {moved} 个文件已移至根目录, {failed} 个失败, 已清理 {removed_dirs} 个空子目录。",
             {"moved": moved, "failed": failed, "removed_dirs": removed_dirs},
         )
     else:

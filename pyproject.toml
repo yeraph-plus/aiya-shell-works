@@ -25,6 +25,7 @@ win = [
 dev = [
     "pytest>=8.0,<9.0",
     "pytest-cov>=5.0,<6.0",
+    "ruff>=0.8,<1.0",
 ]
 
 [project.scripts]
@@ -35,6 +36,44 @@ shell-worker-gui = "main_gui:main"
 
 [tool.setuptools]
 packages = ["core", "gui", "gui.widgets", "modules"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+exclude = [".git", ".venv", "__pycache__"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "F",     # pyflakes
+    "W",     # pycodestyle warnings
+    "I",     # isort (import ordering)
+    "N",     # pep8-naming
+    "Q",     # flake8-quotes
+    "UP",    # pyupgrade
+    "T20",   # flake8-print
+]
+ignore = []
+
+[tool.ruff.lint.isort]
+known-first-party = ["core", "gui", "modules"]
+
+[tool.ruff.lint.flake8-quotes]
+docstring-quotes = "double"
+
+[tool.ruff.lint.per-file-ignores]
+"main_cli.py" = ["T201"]
+"scripts/verify.py" = ["T201", "E702"]
+"tests/*.py" = ["E702"]
+"gui/widgets/*.py" = ["N802"]
+"gui/workflow_editor.py" = ["N802"]
+"modules/process_inspector.py" = ["N801", "N806"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

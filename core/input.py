@@ -65,9 +65,7 @@ def resolve_input(
         has_file = any(p.is_file() for p in raw_files)
         has_dir = any(p.is_dir() for p in raw_files)
         if has_dir and has_file and not recurse:
-            raise PipelineExecutionError(
-                "混合文件与文件夹输入时必须启用 --recurse（仅展开文件）以避免 atom 不一致。"
-            )
+            raise PipelineExecutionError("混合文件与文件夹输入时必须启用 --recurse（仅展开文件）以避免 atom 不一致。")
         return InputPlan(atom="file", recurse=recurse, files=tuple(raw_files))
 
     lines: list[str] = []

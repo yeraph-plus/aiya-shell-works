@@ -29,14 +29,14 @@ CONFIG_SCHEMA = {
 }
 
 
-def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     line = ctx.shared.get("input_line", "")
     ident = f"{abs(hash(line)) & 0xFFFF:04x}"
     filename = f"{cfg['prefix']}_{ident}{cfg['extension']}"
     target = Path(ctx.output_dir) / filename
     target.write_text(line + "\n", encoding="utf-8")
     ctx.track_extra_file(target)
-    runtime.log("verify-line-echo", "success",
-                f"已写入: {line[:40]!r} -> {filename}",
-                {"line": line, "file": str(target)})
+    runtime.log(
+        "verify-line-echo", "success", f"已写入: {line[:40]!r} -> {filename}", {"line": line, "file": str(target)}
+    )
     return ctx.clone(working_path=target)

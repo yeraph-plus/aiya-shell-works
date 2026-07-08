@@ -23,8 +23,9 @@ process boundary.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .events import EventBus, JSONLFileSink, LogSink, PipelineEvent, PipelineEventType
 from .terminal import TerminalResult, TerminalSession, TerminalSessionRegistry

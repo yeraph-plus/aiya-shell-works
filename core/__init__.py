@@ -2,38 +2,52 @@
 
 from __future__ import annotations
 
-CORE_VERSION = "2.0.0"
-
-from .events import (
-    EventBus, InMemorySink, JSONLFileSink, LogSink, NullSink,
-    PipelineEvent, PipelineEventType,
+from .config_schema import (
+    SUPPORTED_CONFIG_TYPES,
+    ConfigSchemaValidationError,
+    ConfigValidationError,
+    normalize_config_params,
+    validate_config_schema,
 )
 from .context import Atom, PipelineContext
-from .terminal import TerminalResult, TerminalSession, TerminalSessionRegistry, get_session
-from .runtime import PipelineRuntime
-from .config_schema import (
-    ConfigSchemaValidationError, ConfigValidationError,
-    SUPPORTED_CONFIG_TYPES, normalize_config_params, validate_config_schema,
+from .events import (
+    EventBus,
+    InMemorySink,
+    JSONLFileSink,
+    LogSink,
+    NullSink,
+    PipelineEvent,
+    PipelineEventType,
 )
 from .exceptions import (
+    FileHandlingError,
     PipelineCancelledError,
     PipelineExecutionError,
-    FileHandlingError,
     WorkflowValidationError,
 )
-from .input import InputPlan, resolve_input
+from .executor import PipelineExecutor, PreparedStep, execute_workflow
 from .files import WorkingCopier, build_lines_units, build_path_units, make_unique_path, units_from_plan
+from .input import InputPlan, resolve_input
 from .input_inspector import InputInspector, ValidationResult
+from .module_manager import (
+    ModuleDefinition,
+    ModuleManager,
+)
+from .runtime import PipelineRuntime
+from .terminal import TerminalResult, TerminalSession, TerminalSessionRegistry, get_session
+from .tools import collect_file_targets, ensure_pty_available, parse_extension_set
 from .workflow_loader import (
-    VALID_ATOMS, VALID_SCOPES,
-    WorkflowDefinition, WorkflowLoader, WorkflowMeta, WorkflowStep, WorkflowSummary,
+    VALID_ATOMS,
+    VALID_SCOPES,
+    WorkflowDefinition,
+    WorkflowLoader,
+    WorkflowMeta,
+    WorkflowStep,
+    WorkflowSummary,
     WorkflowValidationResult,
 )
-from .module_manager import (
-    ModuleDefinition, ModuleManager,
-)
-from .executor import PipelineExecutor, execute_workflow, PreparedStep
-from .tools import collect_file_targets, ensure_pty_available, parse_extension_set
+
+CORE_VERSION = "2.0.0"
 
 __all__ = [
     "CORE_VERSION",

@@ -19,8 +19,7 @@ from typing import Any
 MODULE_META = {
     "slug": "verify-run-external-tool",
     "name": "Verify — Run External Tool",
-    "description": "Invoke an external CLI binary on each working file; "
-                   "verification helper using resources/mock_tool.",
+    "description": "Invoke an external CLI binary on each working file; verification helper using resources/mock_tool.",
     "core_version": "2.0.0",
     "tags": ["example", "external"],
     "atom": ["file"],
@@ -33,8 +32,7 @@ CONFIG_SCHEMA = {
             "type": "str",
             "title": "External tool path",
             "default": "",
-            "description": "Path to mock_tool.bat (.sh). Empty → auto-detect "
-                           "by platform under ../resources.",
+            "description": "Path to mock_tool.bat (.sh). Empty → auto-detect by platform under ../resources.",
         },
     },
 }
@@ -49,7 +47,7 @@ def _default_tool_path(project_dir: Path) -> Path:
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     raw = (cfg.get("mock_tool_path") or "").strip()
     if raw:
         tool = Path(raw)
@@ -58,8 +56,7 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
         tool = _default_tool_path(_REPO_ROOT)
 
     if not tool.exists():
-        runtime.log("verify-run-external-tool", "error",
-                    f"未找到外部工具: {tool}")
+        runtime.log("verify-run-external-tool", "error", f"未找到外部工具: {tool}")
         raise FileNotFoundError(f"mock tool not found: {tool}")
 
     if sys.platform != "win32":
@@ -69,11 +66,12 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
             pass
 
     cmd = [str(tool), str(ctx.working_path)]
-    runtime.log("verify-run-external-tool", "hint",
-                f"spawn: {' '.join(cmd)}")
+    runtime.log("verify-run-external-tool", "hint", f"spawn: {' '.join(cmd)}")
     result = runtime.spawn(cmd)
-    runtime.log("verify-run-external-tool",
-                "success" if result.is_success else "error",
-                f"exit={result.exit_code} ({Path(cmd[0]).name})",
-                {"exit_code": result.exit_code, "command": " ".join(cmd)})
+    runtime.log(
+        "verify-run-external-tool",
+        "success" if result.is_success else "error",
+        f"exit={result.exit_code} ({Path(cmd[0]).name})",
+        {"exit_code": result.exit_code, "command": " ".join(cmd)},
+    )
     return ctx

@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 def collect_file_targets(
-    context: "PipelineContext",
+    context: PipelineContext,
     *,
     extensions: frozenset[str] | None = None,
 ) -> list[Path]:
@@ -60,8 +60,7 @@ def make_unique_path(
     else:
         fmt = "{stem}{separator}{counter}{suffix}"
     for counter in range(1, 10001):
-        candidate = parent / fmt.format(
-            stem=stem, counter=counter, suffix=suffix, separator=separator)
+        candidate = parent / fmt.format(stem=stem, counter=counter, suffix=suffix, separator=separator)
         if not candidate.exists():
             return candidate
     raise RuntimeError(f"无法生成唯一文件名: {target} (尝试 10000 次)")
@@ -70,23 +69,21 @@ def make_unique_path(
 def parse_extension_set(raw: str) -> frozenset[str]:
     """Split whitespace-delimited *raw* into a lower-cased extension set."""
 
-    return frozenset(
-        e.strip().lower().lstrip(".") for e in raw.split() if e.strip()
-    )
+    return frozenset(e.strip().lower().lstrip(".") for e in raw.split() if e.strip())
 
 
-def ensure_pty_available(runtime: "PipelineRuntime", slug: str) -> bool:
+def ensure_pty_available(runtime: PipelineRuntime, slug: str) -> bool:
     """Check that a PTY backend is importable.  Logs an error if not."""
 
     import sys
+
     if sys.platform == "win32":
         try:
             import winpty  # noqa: F401
+
             return True
         except ImportError:
-            runtime.log(slug, "warning",
-                        "pywinpty 未安装，使用子进程回退（无交互 stdin）。",
-                        {"backend": "subprocess"})
+            runtime.log(slug, "warning", "pywinpty 未安装，使用子进程回退（无交互 stdin）。", {"backend": "subprocess"})
             return False
     # POSIX pty is part of stdlib; subprocess is implicit fallback.
     return True

@@ -22,8 +22,10 @@ Design departures from the legacy ``PipelineEventBus``:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterator, Literal, Protocol
+from datetime import UTC
+from typing import Any, Literal, Protocol
 
 LOGGER = logging.getLogger(__name__)
 
@@ -159,9 +161,9 @@ class InMemorySink:
 class JSONLFileSink:
     """Append each event as a JSON line for log retention / resume support."""
 
-    def __init__(self, path: str | "Any", *, encoding: str = "utf-8") -> None:
-        from pathlib import Path
+    def __init__(self, path: str | Any, *, encoding: str = "utf-8") -> None:
         import json
+        from pathlib import Path
 
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -170,9 +172,10 @@ class JSONLFileSink:
         self._json = json
 
     def write(self, event: PipelineEvent) -> None:
-        from datetime import datetime, timezone
+        from datetime import datetime
+
         record = {
-            "ts": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+            "ts": datetime.now(UTC).isoformat(timespec="microseconds"),
             "slug": event.slug,
             "type": event.type,
             "text": event.text,

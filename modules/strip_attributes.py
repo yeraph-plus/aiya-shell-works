@@ -7,7 +7,6 @@ import platform
 from pathlib import Path
 from typing import Any
 
-
 MODULE_META = {
     "slug": "strip-attributes",
     "name": "清除文件属性",
@@ -56,7 +55,7 @@ def _set_attrs(path: str, attrs: int) -> bool:
         return False
 
 
-def _collect_targets(ctx: "Any") -> list[Path]:
+def _collect_targets(ctx: Any) -> list[Path]:
     wp = Path(ctx.working_path)
     if ctx.atom == "file":
         return [wp] if wp.is_file() else []
@@ -65,7 +64,7 @@ def _collect_targets(ctx: "Any") -> list[Path]:
     return []
 
 
-def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     if platform.system() != "Windows":
         runtime.log("strip-attributes", "hint", "当前系统非 Windows，跳过属性清除。")
         return ctx
@@ -110,7 +109,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
         if _set_attrs(path_str, new_attrs):
             processed += 1
             runtime.log(
-                "strip-attributes", "success",
+                "strip-attributes",
+                "success",
                 f"已清除属性: {f.name} ({', '.join(parts)})",
             )
         else:
@@ -119,7 +119,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
 
     if processed > 0:
         runtime.log(
-            "strip-attributes", "message",
+            "strip-attributes",
+            "message",
             f"属性清除完成: {processed} 个处理, {failed} 个失败。",
         )
     elif failed == 0:

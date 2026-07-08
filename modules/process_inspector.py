@@ -75,10 +75,15 @@ def _get_kernel32() -> Any:
     global _kernel32
     if _kernel32 is None:
         import ctypes.wintypes
+
         _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         _kernel32.CreateFileW.argtypes = [
-            ctypes.wintypes.LPCWSTR, ctypes.wintypes.DWORD, ctypes.wintypes.DWORD,
-            ctypes.wintypes.LPVOID, ctypes.wintypes.DWORD, ctypes.wintypes.DWORD,
+            ctypes.wintypes.LPCWSTR,
+            ctypes.wintypes.DWORD,
+            ctypes.wintypes.DWORD,
+            ctypes.wintypes.LPVOID,
+            ctypes.wintypes.DWORD,
+            ctypes.wintypes.DWORD,
             ctypes.wintypes.HANDLE,
         ]
         _kernel32.CreateFileW.restype = ctypes.wintypes.HANDLE
@@ -91,8 +96,13 @@ def _is_locked_win(path: Path) -> bool:
     k32 = _get_kernel32()
     INVALID = ctypes.c_void_p(-1).value
     handle = k32.CreateFileW(
-        str(path), GENERIC_READ | GENERIC_WRITE, 0, None,
-        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, None,
+        str(path),
+        GENERIC_READ | GENERIC_WRITE,
+        0,
+        None,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        None,
     )
     if handle == INVALID or handle is None:
         return True
@@ -104,6 +114,7 @@ def _is_locked_win(path: Path) -> bool:
 # Windows process discovery (rstrtmgr.dll Restart Manager)
 # ---------------------------------------------------------------------------
 if sys.platform == "win32":
+
     class _RM_UNIQUE_PROCESS(ctypes.Structure):
         _fields_ = [
             ("dwProcessId", ctypes.c_uint32),
@@ -128,17 +139,26 @@ if sys.platform == "win32":
         if _rm is None:
             _rm = ctypes.WinDLL("rstrtmgr")
             _rm.RmStartSession.argtypes = [
-                ctypes.POINTER(ctypes.c_uint32), ctypes.c_uint32, ctypes.c_wchar_p,
+                ctypes.POINTER(ctypes.c_uint32),
+                ctypes.c_uint32,
+                ctypes.c_wchar_p,
             ]
             _rm.RmStartSession.restype = ctypes.c_uint32
             _rm.RmRegisterResources.argtypes = [
-                ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(ctypes.c_wchar_p),
-                ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p,
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+                ctypes.POINTER(ctypes.c_wchar_p),
+                ctypes.c_uint32,
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+                ctypes.c_void_p,
             ]
             _rm.RmRegisterResources.restype = ctypes.c_uint32
             _rm.RmGetList.argtypes = [
-                ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32),
-                ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p,
+                ctypes.c_uint32,
+                ctypes.POINTER(ctypes.c_uint32),
+                ctypes.POINTER(ctypes.c_uint32),
+                ctypes.c_void_p,
                 ctypes.POINTER(ctypes.c_uint32),
             ]
             _rm.RmGetList.restype = ctypes.c_uint32
@@ -168,7 +188,10 @@ if sys.platform == "win32":
             count = ctypes.c_uint32(0)
             reboots = ctypes.c_uint32(0)
             ret = rm.RmGetList(
-                session, ctypes.byref(needed), ctypes.byref(count), None,
+                session,
+                ctypes.byref(needed),
+                ctypes.byref(count),
+                None,
                 ctypes.byref(reboots),
             )
             if ret != 234:  # ERROR_MORE_DATA
@@ -176,7 +199,10 @@ if sys.platform == "win32":
 
             buf = (_RM_PROCESS_INFO * count.value)()
             ret = rm.RmGetList(
-                session, ctypes.byref(needed), ctypes.byref(count), buf,
+                session,
+                ctypes.byref(needed),
+                ctypes.byref(count),
+                buf,
                 ctypes.byref(reboots),
             )
             if ret != 0:
@@ -197,6 +223,7 @@ if sys.platform == "win32":
                 pass
 
 else:
+
     def _find_locking_processes_win(_file_path: str) -> list[tuple[int, str]]:  # type: ignore[no-redef]
         return []
 
@@ -234,11 +261,15 @@ def _kill_pid_unix(pid: int, runtime: Any) -> bool:
 
 def _kill_pid_win(pid: int, name: str) -> bool:
     import subprocess
+
     try:
         cf = subprocess.CREATE_NO_WINDOW
         proc = subprocess.run(
             ["taskkill", "/f", "/pid", str(pid)],
-            capture_output=True, text=True, timeout=15, creationflags=cf,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=cf,
         )
         if proc.returncode == 0:
             return True
@@ -286,8 +317,7 @@ def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
 
     freed_str: list[str] = []
 
-    runtime.log("process-inspector", "info",
-                 f"检测完成: {len(free_str)} 空闲, {len(locked_str)} 被锁定 (共 {total})")
+    runtime.log("process-inspector", "info", f"检测完成: {len(free_str)} 空闲, {len(locked_str)} 被锁定 (共 {total})")
 
     if action == "detect":
         ctx.shared["file_lock_status"] = {"locked": locked_str, "free": free_str, "freed": []}
@@ -301,8 +331,11 @@ def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
         ctx.shared["lock_summary"] = {"total": total, "locked": 0, "free": len(free_str), "freed": 0}
         return ctx
 
-    runtime.log("process-inspector", "warning",
-                 f"开始释放 {len(locked_str)} 个被锁定文件 (保护: {', '.join(sorted(safe_set)) or '(无)'})")
+    runtime.log(
+        "process-inspector",
+        "warning",
+        f"开始释放 {len(locked_str)} 个被锁定文件 (保护: {', '.join(sorted(safe_set)) or '(无)'})",
+    )
 
     for fp in locked_paths:
         fp_str = str(fp)
@@ -314,8 +347,7 @@ def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
             info = [(pid, f"pid={pid}") for pid in pids]
 
         if not info:
-            runtime.log("process-inspector", "warning",
-                         f"无法找到锁定 {fp.name} 的进程，跳过。")
+            runtime.log("process-inspector", "warning", f"无法找到锁定 {fp.name} 的进程，跳过。")
             continue
 
         for pid, name in info:
@@ -323,8 +355,7 @@ def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
             is_safe = any(safe in lower_name for safe in safe_set)
 
             if is_safe:
-                runtime.log("process-inspector", "message",
-                             f"  保护: {name} (PID {pid}) 锁定 {fp.name}，不终止。")
+                runtime.log("process-inspector", "message", f"  保护: {name} (PID {pid}) 锁定 {fp.name}，不终止。")
                 continue
 
             if is_windows:
@@ -333,11 +364,9 @@ def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
                 ok = _kill_pid_unix(pid, runtime)
 
             if ok:
-                runtime.log("process-inspector", "message",
-                             f"  已终止: {name} (PID {pid}) → {fp.name}")
+                runtime.log("process-inspector", "message", f"  已终止: {name} (PID {pid}) → {fp.name}")
             else:
-                runtime.log("process-inspector", "error",
-                             f"  终止失败: {name} (PID {pid})")
+                runtime.log("process-inspector", "error", f"  终止失败: {name} (PID {pid})")
 
     # ---- retry verification ----
     for attempt in range(max_retries):
@@ -356,14 +385,18 @@ def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
             break
 
         if attempt < max_retries - 1:
-            runtime.log("process-inspector", "message",
-                         f"仍有 {len(still_locked)} 个文件被锁定，重试 ({attempt + 2}/{max_retries})...")
+            runtime.log(
+                "process-inspector",
+                "message",
+                f"仍有 {len(still_locked)} 个文件被锁定，重试 ({attempt + 2}/{max_retries})...",
+            )
     else:
         still_locked = locked_paths  # final state after all retries
 
     # ---- final status ----
-    final_locked = [p for p in locked_paths if
-                    (_is_locked_win(p) if is_windows else bool(_find_locked_unix(p, runtime)))]
+    final_locked = [
+        p for p in locked_paths if (_is_locked_win(p) if is_windows else bool(_find_locked_unix(p, runtime)))
+    ]
     newly_free = [p for p in locked_paths if p not in final_locked]
 
     freed_str = [str(p) for p in newly_free]
@@ -382,12 +415,10 @@ def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     }
 
     if final_locked_str:
-        runtime.log("process-inspector", "warning",
-                     f"释放完成: {len(freed_str)} 释放, {len(final_locked_str)} 仍锁定")
+        runtime.log("process-inspector", "warning", f"释放完成: {len(freed_str)} 释放, {len(final_locked_str)} 仍锁定")
         for fp in final_locked:
             runtime.log("process-inspector", "error", f"  仍锁定: {fp.name}")
     else:
-        runtime.log("process-inspector", "success",
-                     f"释放完成，全部 {len(locked_str)} 个文件已解锁。")
+        runtime.log("process-inspector", "success", f"释放完成，全部 {len(locked_str)} 个文件已解锁。")
 
     return ctx

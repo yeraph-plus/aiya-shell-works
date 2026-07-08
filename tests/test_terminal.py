@@ -6,12 +6,12 @@ Tests assume we run on win32 here; posix path needs adjustment in CI.
 from __future__ import annotations
 
 import sys
-import pytest
 from pathlib import Path
+
+import pytest
 
 from core import PipelineRuntime
 from core.terminal import TerminalResult, TerminalSession, TerminalSessionRegistry
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -49,7 +49,8 @@ def test_runtime_spawn_emits_started_output_finished(tmp_path: Path, runtime: Pi
     tool = _mock_tool()
     if not tool.exists():  # pragma: no cover
         pytest.skip(f"mock tool missing: {tool}")
-    out = tmp_path / "input.txt"; out.write_text("data", encoding="utf-8")
+    out = tmp_path / "input.txt"
+    out.write_text("data", encoding="utf-8")
     if sys.platform != "win32":
         # ensure .sh is executable
         tool.chmod(0o755)
@@ -74,7 +75,8 @@ def test_runtime_spawn_session_registered_during_run(tmp_path: Path) -> None:
     tool = _mock_tool()
     if not tool.exists():  # pragma: no cover
         pytest.skip("mock tool missing")
-    out = tmp_path / "x.txt"; out.write_text("d", encoding="utf-8")
+    out = tmp_path / "x.txt"
+    out.write_text("d", encoding="utf-8")
     saw_session_count: list[int] = []
 
     def listener(event):
@@ -105,7 +107,8 @@ def test_runtime_sessions_cleared_after_run(tmp_path: Path) -> None:
     tool = _mock_tool()
     if not tool.exists():  # pragma: no cover
         pytest.skip("mock tool missing")
-    out = tmp_path / "x.txt"; out.write_text("y", encoding="utf-8")
+    out = tmp_path / "x.txt"
+    out.write_text("y", encoding="utf-8")
     runtime.spawn([str(tool), str(out)])
     # After spawn returns, the session unregisters automatically.
     assert len(runtime.sessions) == 0

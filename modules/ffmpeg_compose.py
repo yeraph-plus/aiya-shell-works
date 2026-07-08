@@ -85,10 +85,22 @@ CONFIG_SCHEMA = {
     },
 }
 
-_VIDEO_EXTENSIONS = frozenset({
-    ".mp4", ".mkv", ".avi", ".mov", ".webm", ".ts",
-    ".m4v", ".flv", ".wmv", ".m2ts", ".vob", ".y4m",
-})
+_VIDEO_EXTENSIONS = frozenset(
+    {
+        ".mp4",
+        ".mkv",
+        ".avi",
+        ".mov",
+        ".webm",
+        ".ts",
+        ".m4v",
+        ".flv",
+        ".wmv",
+        ".m2ts",
+        ".vob",
+        ".y4m",
+    }
+)
 
 
 def _resolve_ffmpeg_path(cfg: dict) -> str | None:
@@ -144,14 +156,15 @@ def _find_sequence_pattern(directory: Path) -> tuple[str, str] | None:
     return ("", pattern)
 
 
-def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
+def run(ctx: Any, cfg: Any, runtime: Any) -> Any:
     working_path = Path(ctx.working_path)
     output_dir = Path(ctx.output_dir)
 
     ffmpeg = _resolve_ffmpeg_path(cfg)
     if ffmpeg is None:
         runtime.log(
-            "ffmpeg-compose", "error",
+            "ffmpeg-compose",
+            "error",
             "FFmpeg 未找到，请配置 ffmpeg_path 或运行 resources/install_ffmpeg.ps1。",
         )
         return ctx
@@ -174,7 +187,8 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
             is_frame_sequence = True
         else:
             runtime.log(
-                "ffmpeg-compose", "error",
+                "ffmpeg-compose",
+                "error",
                 f"不支持的输入类型: {working_path}。需要 Y4M 文件或帧序列目录。",
             )
             return ctx
@@ -190,29 +204,36 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
 
         cmd = [
             ffmpeg,
-            "-framerate", fps,
-            "-i", str(working_path / pattern),
+            "-framerate",
+            fps,
+            "-i",
+            str(working_path / pattern),
         ]
         runtime.log(
-            "ffmpeg-compose", "message",
+            "ffmpeg-compose",
+            "message",
             f"合成帧序列: {working_path.name} (帧率: {fps}, 模式: {pattern})...",
         )
     elif is_y4m:
         cmd = [
             ffmpeg,
-            "-i", str(working_path),
+            "-i",
+            str(working_path),
         ]
         runtime.log(
-            "ffmpeg-compose", "message",
+            "ffmpeg-compose",
+            "message",
             f"编码 Y4M: {working_path.name}...",
         )
     else:
         cmd = [
             ffmpeg,
-            "-i", str(working_path),
+            "-i",
+            str(working_path),
         ]
         runtime.log(
-            "ffmpeg-compose", "message",
+            "ffmpeg-compose",
+            "message",
             f"编码视频: {working_path.name}...",
         )
 
@@ -237,14 +258,16 @@ def run(ctx: "Any", cfg: "Any", runtime: "Any") -> "Any":
 
     if not result.is_success:
         runtime.log(
-            "ffmpeg-compose", "error",
+            "ffmpeg-compose",
+            "error",
             f"FFmpeg 返回非零退出码: {result.exit_code}",
         )
         return ctx
 
     ctx.track_extra_file(output_path)
     runtime.log(
-        "ffmpeg-compose", "success",
+        "ffmpeg-compose",
+        "success",
         f"编码完成: {output_path.name}",
         {"output_path": str(output_path)},
     )

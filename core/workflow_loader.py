@@ -24,9 +24,10 @@ shims are provided.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import yaml
 
@@ -250,16 +251,10 @@ class WorkflowLoader:
 
         atom = doc.get("atom")
         if not isinstance(atom, str) or atom not in VALID_ATOMS:
-            errors.append(
-                "Field 'atom' must be one of: "
-                + ", ".join(f"'{a}'" for a in VALID_ATOMS) + "."
-            )
+            errors.append("Field 'atom' must be one of: " + ", ".join(f"'{a}'" for a in VALID_ATOMS) + ".")
         scope = doc.get("scope")
         if not isinstance(scope, int) or scope not in VALID_SCOPES:
-            errors.append(
-                "Field 'scope' must be an integer in "
-                + ", ".join(str(s) for s in VALID_SCOPES) + "."
-            )
+            errors.append("Field 'scope' must be an integer in " + ", ".join(str(s) for s in VALID_SCOPES) + ".")
         recurse = doc.get("recurse", False)
         if not isinstance(recurse, bool):
             errors.append("Field 'recurse' must be a boolean (omitted → false).")
@@ -269,8 +264,7 @@ class WorkflowLoader:
             pass
         if atom not in _RECURSE_ONLY_ATOMS and recurse:
             errors.append(
-                f"Field 'recurse=true' 仅在 atom ∈ "
-                f"{list(_RECURSE_ONLY_ATOMS)} 时有意义；当前 atom='{atom}'。"
+                f"Field 'recurse=true' 仅在 atom ∈ {list(_RECURSE_ONLY_ATOMS)} 时有意义；当前 atom='{atom}'。"
             )
 
         raw_steps = doc.get("steps")

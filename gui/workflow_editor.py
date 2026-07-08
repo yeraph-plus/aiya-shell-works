@@ -22,8 +22,8 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
-    QPushButton,
     QPlainTextEdit,
+    QPushButton,
     QRadioButton,
     QVBoxLayout,
     QWidget,
@@ -32,7 +32,6 @@ from PySide6.QtWidgets import (
 from core import ModuleDefinition, ModuleManager, WorkflowDefinition, WorkflowLoader
 from gui.widgets.dynamic_form import DynamicParameterForm
 from gui.workflow_editor_state import WorkflowDraft, filter_modules
-
 
 _ATOM_OPTIONS = [
     ("file", "文件原子", "每个文件作为 1 个任务单元（recurse 控制是否展开文件夹）。"),
@@ -81,9 +80,7 @@ class _AtomDialog(QDialog):
         self.recurse_check = QCheckBox("递归展开文件夹 (--recurse；仅 atom=file 有效)")
         layout.addWidget(self.recurse_check)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self
-        )
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -116,9 +113,7 @@ class WorkflowEditor(QMainWindow):
         self.module_manager = module_manager
         self.modules: dict[str, ModuleDefinition] = self.module_manager.get_modules()
         self._is_existing_workflow = workflow is not None
-        self.draft = WorkflowDraft.from_workflow(
-            workflow or self.workflow_loader.new_workflow()
-        )
+        self.draft = WorkflowDraft.from_workflow(workflow or self.workflow_loader.new_workflow())
         self._is_refreshing = False
         self._dirty = False
 
@@ -145,7 +140,9 @@ class WorkflowEditor(QMainWindow):
         recurse = dialog.selected_recurse()
         self._is_existing_workflow = False
         template = self.workflow_loader.new_workflow(
-            atom=atom, scope=scope, recurse=recurse,
+            atom=atom,
+            scope=scope,
+            recurse=recurse,
         )
         if template.atom == "file" and not template.recurse:
             # folder unit implied: rename to "folder" hint is in UI only;
@@ -156,13 +153,12 @@ class WorkflowEditor(QMainWindow):
         self._refresh_available_modules()
         self._refresh_steps()
         self._set_dirty(False)
-        self.statusBar().showMessage(
-            f"已创建新工作流（atom={atom}, scope={scope}, recurse={recurse}）"
-        )
+        self.statusBar().showMessage(f"已创建新工作流（atom={atom}, scope={scope}, recurse={recurse}）")
 
     def open_workflow(self) -> None:
         selected_path, _ = QFileDialog.getOpenFileName(
-            self, "打开工作流",
+            self,
+            "打开工作流",
             str(self.workflow_loader.workflows_dir),
             "Workflow Files (*.yaml *.yml)",
         )
@@ -187,7 +183,8 @@ class WorkflowEditor(QMainWindow):
             self.name_input.text() or "workflow"
         )
         selected_path, _ = QFileDialog.getSaveFileName(
-            self, "另存为",
+            self,
+            "另存为",
             str(self.workflow_loader.workflows_dir / default_name),
             "Workflow Files (*.yaml *.yml)",
         )
@@ -201,9 +198,13 @@ class WorkflowEditor(QMainWindow):
         if self.draft.source_path is not None:
             base_name = self.draft.source_path.stem
         else:
-            base_name = self.workflow_loader._default_filename(  # noqa: SLF001
-                self.name_input.text() or "workflow"
-            ).replace(".yaml", "").replace(".yml", "")
+            base_name = (
+                self.workflow_loader._default_filename(  # noqa: SLF001
+                    self.name_input.text() or "workflow"
+                )
+                .replace(".yaml", "")
+                .replace(".yml", "")
+            )
         clone_stem = f"{base_name}-副本"
         target = self.workflow_loader.workflows_dir / f"{clone_stem}.yaml"
         counter = 2
@@ -343,16 +344,12 @@ class WorkflowEditor(QMainWindow):
         self.move_up_button.clicked.connect(lambda: self._move_selected_step(-1))
         self.move_down_button.clicked.connect(lambda: self._move_selected_step(1))
         self.steps_list.currentRowChanged.connect(self._on_step_selection_changed)
-        self.steps_list.itemDoubleClicked.connect(
-            lambda item: self.steps_list.setCurrentItem(item)
-        )
+        self.steps_list.itemDoubleClicked.connect(lambda item: self.steps_list.setCurrentItem(item))
         self.step_name_input.textEdited.connect(self._on_step_name_changed)
         self.parameter_form.values_changed.connect(self._on_step_params_changed)
         self.name_input.textEdited.connect(self._sync_meta_from_widgets)
         self.description_input.textChanged.connect(self._sync_meta_from_widgets)
-        self.available_modules_list.itemDoubleClicked.connect(
-            lambda _item: self._add_selected_module()
-        )
+        self.available_modules_list.itemDoubleClicked.connect(lambda _item: self._add_selected_module())
 
     # ------------------------------------------------------------
     # Sync
@@ -395,9 +392,7 @@ class WorkflowEditor(QMainWindow):
             display = f"{name}  {tag_text}" if tag_text else name
             item = QListWidgetItem(display)
             item.setData(Qt.UserRole, module_definition.slug)
-            item.setToolTip(
-                str(module_definition.module_meta.get("description", module_definition.slug))
-            )
+            item.setToolTip(str(module_definition.module_meta.get("description", module_definition.slug)))
             self.available_modules_list.addItem(item)
 
     # ------------------------------------------------------------
@@ -489,8 +484,7 @@ class WorkflowEditor(QMainWindow):
             self.parameter_form.set_schema({}, {})
             return
         self.step_description_label.setText(
-            str(module_definition.module_meta.get("description", ""))
-            or "该模块未提供额外说明。"
+            str(module_definition.module_meta.get("description", "")) or "该模块未提供额外说明。"
         )
         self.parameter_form.set_schema(module_definition.config_schema, dict(step.params))
 
@@ -531,9 +525,7 @@ class WorkflowEditor(QMainWindow):
         self._sync_meta_from_widgets()
         workflow = self.draft.to_workflow_definition()
         try:
-            relative_target = target_path.resolve().relative_to(
-                self.workflow_loader.workflows_dir
-            )
+            relative_target = target_path.resolve().relative_to(self.workflow_loader.workflows_dir)
             saved_path = self.workflow_loader.save(workflow, relative_target)
         except Exception as exc:  # pragma: no cover - UI feedback path
             QMessageBox.critical(self, "保存失败", str(exc))
@@ -557,7 +549,9 @@ class WorkflowEditor(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._dirty:
             reply = QMessageBox.question(
-                self, "未保存的更改", "工作流已修改。是否在关闭前保存？",
+                self,
+                "未保存的更改",
+                "工作流已修改。是否在关闭前保存？",
                 QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
             )
             if reply == QMessageBox.Save:

@@ -1,4 +1,4 @@
-﻿"""Workflow executor: atom x scope x recurse driven unit dispatch.
+"""Workflow executor: atom x scope x recurse driven unit dispatch.
 
 Single-threaded execution with per-unit event-bus isolation.  Scope values
 control how inputs are batched into tasks:
@@ -19,9 +19,10 @@ is ``PipelineContext | None | dict[str, ctx]``.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
 from .config_schema import (
     ConfigSchemaValidationError,
@@ -93,8 +94,10 @@ class PipelineExecutor:
 
         definition = _resolve_workflow_definition(workflow)
         plan = input_plan or resolve_input(
-            files=files, recurse=recurse,
-            lines_text=lines_text, lines_file=lines_file,
+            files=files,
+            recurse=recurse,
+            lines_text=lines_text,
+            lines_file=lines_file,
         )
         self._check_plan_compat(definition, plan)
 
@@ -109,7 +112,8 @@ class PipelineExecutor:
         cancelled = False
 
         active_runtime.log(
-            "executor", "message",
+            "executor",
+            "message",
             f"start workflow: {definition.meta.name} "
             f"(atom={definition.atom}, scope={definition.scope}, "
             f"recurse={definition.recurse}, units={total}, direct={direct_mode})",
@@ -132,22 +136,26 @@ class PipelineExecutor:
 
                 ctx = self._prepare_context(definition, plan, copier, unit, shared=shared)
                 final_ctx = self._run_unit(
-                    ctx=ctx, runtime=active_runtime,
-                    unit_index=idx, total_units=total, steps=steps,
+                    ctx=ctx,
+                    runtime=active_runtime,
+                    unit_index=idx,
+                    total_units=total,
+                    steps=steps,
                 )
                 successful += 1
-                results.append({
-                    "success": True,
-                    "unit": _unit_display(unit),
-                    "working_path": str(final_ctx.working_path),
-                    "original_input": _display_name(final_ctx.original_input),
-                })
+                results.append(
+                    {
+                        "success": True,
+                        "unit": _unit_display(unit),
+                        "working_path": str(final_ctx.working_path),
+                        "original_input": _display_name(final_ctx.original_input),
+                    }
+                )
                 self._report_progress(idx, total, _unit_display(unit), "completed")
             except PipelineCancelledError:
                 cancelled = True
                 active_runtime.log(
-                    "executor", "warning",
-                    f"cancelled: unit {idx}/{total} ({_unit_display(unit) or '<none>'})"
+                    "executor", "warning", f"cancelled: unit {idx}/{total} ({_unit_display(unit) or '<none>'})"
                 )
                 break
             except Exception as exc:
@@ -157,14 +165,18 @@ class PipelineExecutor:
                     "type": type(exc).__name__,
                 }
                 errors.append(err)
-                results.append({
-                    "success": False, "unit": err["unit"],
-                    "error": err["error"], "type": err["type"],
-                })
+                results.append(
+                    {
+                        "success": False,
+                        "unit": err["unit"],
+                        "error": err["error"],
+                        "type": err["type"],
+                    }
+                )
                 active_runtime.log(
-                    "executor", "error",
-                    f"unit failed [{idx}/{total}]: "
-                    f"{err['unit'] or '<none>'} -> {err['error']}",
+                    "executor",
+                    "error",
+                    f"unit failed [{idx}/{total}]: {err['unit'] or '<none>'} -> {err['error']}",
                 )
                 self._report_progress(idx, total, _unit_display(unit), "failed")
 
@@ -184,12 +196,11 @@ class PipelineExecutor:
             "output_dir": str(copier.output_dir),
         }
         active_runtime.log(
-            "executor", "success" if success else "message",
-            f"workflow done: success={success}, cancelled={cancelled}, "
-            f"successful={successful}, failed={len(errors)}",
+            "executor",
+            "success" if success else "message",
+            f"workflow done: success={success}, cancelled={cancelled}, successful={successful}, failed={len(errors)}",
         )
-        self._report_progress(completed, total, None,
-                              "cancelled" if cancelled else "done")
+        self._report_progress(completed, total, None, "cancelled" if cancelled else "done")
         return summary
 
     # ------------------------------------------------------------------
@@ -207,15 +218,11 @@ class PipelineExecutor:
         """
         if workflow.atom == "none":
             if plan.atom != "none":
-                raise PipelineExecutionError(
-                    f"workflow atom='none' 不接受输入路径。"
-                )
+                raise PipelineExecutionError("workflow atom='none' 不接受输入路径。")
             return
         if workflow.atom == "line":
             if plan.atom != "line":
-                raise PipelineExecutionError(
-                    f"workflow atom='line' 不接受文件输入路径，请使用文本输入。"
-                )
+                raise PipelineExecutionError("workflow atom='line' 不接受文件输入路径，请使用文本输入。")
             return
         # atom="file" or "folder": must have file/dir inputs
         if plan.atom not in ("file", "folder"):
@@ -225,9 +232,7 @@ class PipelineExecutor:
         if workflow.atom == "folder":
             for p in plan.files:
                 if not p.is_dir():
-                    raise PipelineExecutionError(
-                        f"workflow atom='folder' 仅接受文件夹输入，收到文件: {p}"
-                    )
+                    raise PipelineExecutionError(f"workflow atom='folder' 仅接受文件夹输入，收到文件: {p}")
 
     def _prepare_steps(self, workflow: WorkflowDefinition) -> list[PreparedStep]:
         modules = self.module_manager.get_modules()
@@ -258,8 +263,10 @@ class PipelineExecutor:
                 ) from exc
             prepared.append(
                 PreparedStep(
-                    index=idx, name=step.name or step.module,
-                    module_slug=step.module, module_definition=definition,
+                    index=idx,
+                    name=step.name or step.module,
+                    module_slug=step.module,
+                    module_definition=definition,
                     params=params,
                 )
             )
@@ -281,9 +288,7 @@ class PipelineExecutor:
                 return [{"path": None, "source_root": None}]
             if plan.atom == "line":
                 return [{"line": "\n".join(plan.lines)}]
-            return [{"__shared_paths__": list(plan.files),
-                     "recurse": plan.recurse,
-                     "source_root": None}]
+            return [{"__shared_paths__": list(plan.files), "recurse": plan.recurse, "source_root": None}]
         return units_from_plan(plan)
 
     def _prepare_context(
@@ -325,24 +330,26 @@ class PipelineExecutor:
         unit_name = _display_name(ctx.original_input) or "<none>"
         current = ctx
 
-        runtime.log("executor", "message",
-                    f"start unit [{unit_index}/{total_units}]: {unit_name}")
+        runtime.log("executor", "message", f"start unit [{unit_index}/{total_units}]: {unit_name}")
 
         for step in steps:
             self._raise_if_cancelled(runtime)
-            runtime.log(step.module_slug, "message",
-                        f"start step [{unit_index}/{total_units}] "
-                        f"{step.index}/{len(steps)}: {step.name}")
+            runtime.log(
+                step.module_slug,
+                "message",
+                f"start step [{unit_index}/{total_units}] {step.index}/{len(steps)}: {step.name}",
+            )
 
             result = step.module_definition.run(current, dict(step.params), runtime)
             current = self._resolve_step_result(step_name=step.name, result=result, fallback=current)
 
-            runtime.log(step.module_slug, "success",
-                        f"done step [{unit_index}/{total_units}] "
-                        f"{step.index}/{len(steps)}: {step.name}")
+            runtime.log(
+                step.module_slug,
+                "success",
+                f"done step [{unit_index}/{total_units}] {step.index}/{len(steps)}: {step.name}",
+            )
 
-        runtime.log("executor", "success",
-                    f"unit ok [{unit_index}/{total_units}]: {unit_name}")
+        runtime.log("executor", "success", f"unit ok [{unit_index}/{total_units}]: {unit_name}")
         return current
 
     def _resolve_step_result(self, *, step_name: str, result: Any, fallback: PipelineContext) -> PipelineContext:
@@ -364,10 +371,15 @@ class PipelineExecutor:
         if self.progress_callback is None:
             return
         percent = 100 if total == 0 else int(current * 100 / total)
-        self.progress_callback({
-            "current": current, "total": total,
-            "percent": percent, "unit": unit, "status": status,
-        })
+        self.progress_callback(
+            {
+                "current": current,
+                "total": total,
+                "percent": percent,
+                "unit": unit,
+                "status": status,
+            }
+        )
 
     def _raise_if_cancelled(self, runtime: PipelineRuntime) -> None:
         if self.cancel_requested is not None and self.cancel_requested():
@@ -411,9 +423,12 @@ def execute_workflow(
         return executor.execute(
             workflow,
             output_dir=output_dir,
-            files=files, recurse=recurse,
-            lines_text=lines_text, lines_file=lines_file,
-            direct_mode=direct_mode, shared=shared,
+            files=files,
+            recurse=recurse,
+            lines_text=lines_text,
+            lines_file=lines_file,
+            direct_mode=direct_mode,
+            shared=shared,
         )
     finally:
         runtime.close()
@@ -422,6 +437,7 @@ def execute_workflow(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _resolve_workflow_definition(
     workflow: WorkflowDefinition | Mapping[str, Any] | str | Path,
