@@ -14,7 +14,7 @@ MODULE_META = {
     "name": "标准化文件后缀",
     "core_version": "2.0.0",
     "tags": ["normalize", "extension"],
-    "atom": ["file", "folder"],
+    "is_file_module": True,
     "description": "统一文件扩展名为小写标准后缀，如 jpeg→jpg、JPG→jpg、tiff→tif。",
 }
 
@@ -60,8 +60,8 @@ def _make_unique(target: Path) -> Path:
 
 def _collect_targets(ctx: PipelineContext) -> list[Path]:
     wp = Path(ctx.working_path)
-    if ctx.atom == "file":
-        return [wp] if wp.is_file() else []
+    if wp.is_file():
+        return [wp]
     if wp.is_dir():
         return [f for f in wp.iterdir() if f.is_file()]
     return []
@@ -93,7 +93,7 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
                 "success",
                 f"已标准化: {f.name} → {new_path.name}",
             )
-            if ctx.atom == "file":
+            if ctx.is_file:
                 updated_working_path = new_path
         except OSError as e:
             runtime.log(

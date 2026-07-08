@@ -16,7 +16,7 @@ MODULE_META = {
     "name": "FFmpeg 合并 m3u8",
     "core_version": "2.0.0",
     "tags": ["ffmpeg", "merge", "m3u8", "hls", "download"],
-    "atom": ["file", "line"],
+    "is_file_module": False,
     "description": "使用 FFmpeg 下载并合并 m3u8/m3u/HLS 播放列表为单个文件，支持自定义 HTTP 请求头、断线重连、AES-128 解密。",  # noqa: E501
 }
 
@@ -168,10 +168,10 @@ def _resolve_ffmpeg_path(cfg: dict) -> str | None:
 
 
 def _resolve_input(ctx: PipelineContext) -> str | None:
-    if ctx.atom == "line":
-        line = ctx.shared.get("input_line", "").strip()
-        return line if line else None
-    return str(ctx.working_path)
+    line = (ctx.shared.get("input_line") or "").strip()
+    if line:
+        return line
+    return str(ctx.working_path) if ctx.is_file or ctx.is_dir else None
 
 
 def _derive_output_name(source: str, output_format: str) -> str:
@@ -318,9 +318,9 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
         runtime.log("ffmpeg-merge", "message", "无输入源，跳过。")
         return ctx
 
-    if ctx.atom == "file":
+    if ctx.is_file:
         wp = Path(ctx.working_path)
-        if not wp.is_file() or wp.suffix.lower() not in _SUPPORTED_EXTENSIONS:
+        if wp.suffix.lower() not in _SUPPORTED_EXTENSIONS:
             runtime.log(
                 "ffmpeg-merge",
                 "message",
@@ -356,7 +356,7 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
     )
 
     try:
-        cwd = str(Path(source).parent) if ctx.atom == "file" and Path(source).exists() else str(output_dir)
+        cwd = str(Path(source).parent) if ctx.is_file and Path(source).exists() else str(output_dir)
         result = runtime.spawn(cmd, cwd=cwd)
     except OSError as e:
         runtime.log("ffmpeg-merge", "error", f"FFmpeg 启动失败: {e}")

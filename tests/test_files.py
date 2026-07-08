@@ -53,6 +53,11 @@ def test_build_lines_units_strips_per_line() -> None:
     assert [u["line"] for u in units] == ["a", "b", "c"]
 
 
+def test_build_lines_units_batches_when_batch_size_gt_one() -> None:
+    units = build_lines_units(["a", "b", "c"], batch_size=2)
+    assert units == [{"lines": ["a", "b"]}, {"lines": ["c"]}]
+
+
 # ---------------------------------------------------------------------------
 # WorkingCopier basics
 # ---------------------------------------------------------------------------
@@ -73,11 +78,10 @@ def test_copier_default_mode_copies_file_with_source_root(tmp_path: Path) -> Non
     copier = WorkingCopier(out)
     ctx = copier.prepare_path_unit(
         {"path": f, "source_root": src_root},
-        atom="file",
     )
     assert ctx.working_path == out / "a.txt"
     assert ctx.working_path.exists()
-    assert ctx.atom == "file"
+    assert ctx.is_file is True
     assert ctx.source_root == src_root
 
 
@@ -86,7 +90,7 @@ def test_copier_direct_mode_no_copy(tmp_path: Path) -> None:
     src = tmp_path / "a.txt"
     src.write_text("x", encoding="utf-8")
     copier = WorkingCopier(out, direct_mode=True)
-    ctx = copier.prepare_path_unit({"path": src, "source_root": None}, atom="file")
+    ctx = copier.prepare_path_unit({"path": src, "source_root": None})
     assert ctx.working_path == src
     # No copy: original is the working path.
     assert not (out / "a.txt").exists()
@@ -96,7 +100,7 @@ def test_copier_none_unit_uses_output_dir_as_working(tmp_path: Path) -> None:
     out = tmp_path / "out"
     copier = WorkingCopier(out)
     ctx = copier.prepare_none(shared={"k": "v"})
-    assert ctx.atom == "none"
+    assert ctx.is_dir is True
     assert ctx.working_path == out and ctx.shared == {"k": "v"}
 
 
@@ -104,8 +108,17 @@ def test_copier_line_unit_injects_input_line(tmp_path: Path) -> None:
     out = tmp_path / "out"
     copier = WorkingCopier(out)
     ctx = copier.prepare_line({"line": "hello"})
-    assert ctx.atom == "line"
     assert ctx.shared["input_line"] == "hello"
+    assert ctx.shared["input_lines"] == ["hello"]
+    assert ctx.working_path == out
+
+
+def test_copier_line_batch_injects_input_lines(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    copier = WorkingCopier(out)
+    ctx = copier.prepare_line({"lines": ["hello", "world"]})
+    assert "input_line" not in ctx.shared
+    assert ctx.shared["input_lines"] == ["hello", "world"]
     assert ctx.working_path == out
 
 
@@ -129,9 +142,9 @@ def test_copier_copy_collision_parenthetical(tmp_path: Path) -> None:
     src_file = src_root / "a.txt"
     src_file.write_text("x", encoding="utf-8")
     copier = WorkingCopier(out)
-    copier.prepare_path_unit({"path": src_file, "source_root": src_root}, atom="file")
+    copier.prepare_path_unit({"path": src_file, "source_root": src_root})
     # Make a second copy — must be unique:
-    ctx2 = copier.prepare_path_unit({"path": src_file, "source_root": src_root}, atom="file")
+    ctx2 = copier.prepare_path_unit({"path": src_file, "source_root": src_root})
     assert " (1)" in ctx2.working_path.name
 
 
@@ -175,14 +188,46 @@ def test_shared_direct_mode_rejected(tmp_path: Path) -> None:
         copier.prepare_shared_path_unit([src], recurse=False, shared={})
 
 
-def test_copier_folder_unit_keeps_atom_folder(tmp_path: Path) -> None:
-    """recurse=False dir → atom=folder."""
+def test_batched_path_unit_merges_into_isolated_batch_dir(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    src = tmp_path / "src"
+    src.mkdir()
+    a = src / "a.txt"
+    a.write_text("a", encoding="utf-8")
+    b = src / "b.txt"
+    b.write_text("b", encoding="utf-8")
+    copier = WorkingCopier(out)
+    ctx = copier.prepare_batched_path_unit(
+        [
+            {"path": a, "source_root": src},
+            {"path": b, "source_root": src},
+        ],
+        batch_index=1,
+        shared={},
+    )
+    assert ctx.working_path == out / "_batch_0001"
+    assert (ctx.working_path / "a.txt").exists()
+    assert (ctx.working_path / "b.txt").exists()
+    assert ctx.output_dir == out
+
+
+def test_batched_path_unit_direct_mode_rejected(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    src = tmp_path / "a.txt"
+    src.write_text("x", encoding="utf-8")
+    copier = WorkingCopier(out, direct_mode=True)
+    with pytest.raises(FileHandlingError):
+        copier.prepare_batched_path_unit([{"path": src, "source_root": None}], batch_index=1, shared={})
+
+
+def test_copier_folder_unit_is_dir(tmp_path: Path) -> None:
+    """recurse=False directory unit → working_path is a directory."""
 
     out = tmp_path / "out"
     src = tmp_path / "d"
     src.mkdir()
     (src / "f.txt").write_text("y", encoding="utf-8")
     copier = WorkingCopier(out)
-    ctx = copier.prepare_path_unit({"path": src, "source_root": None}, atom="folder")
-    assert ctx.atom == "folder"
+    ctx = copier.prepare_path_unit({"path": src, "source_root": None})
+    assert ctx.is_dir is True
     assert (out / "d").exists()

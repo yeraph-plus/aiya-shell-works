@@ -14,7 +14,7 @@ MODULE_META = {
     "name": "Gallery 统计计数",
     "core_version": "2.0.0",
     "tags": ["gallery", "count", "statistics"],
-    "atom": ["folder"],
+    "is_file_module": True,
     "description": "扫描文件夹顶层文件，忽略图片，统计视频和其他文件数量，在文件夹名后追加 [1V 2PDF 3GIF] 格式的计数标签。",  # noqa: E501
 }
 

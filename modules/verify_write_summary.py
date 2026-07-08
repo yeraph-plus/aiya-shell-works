@@ -24,7 +24,7 @@ MODULE_META = {
     "description": "Write a small summary file capturing renames and current working_path.",
     "core_version": "2.0.0",
     "tags": ["example", "report"],
-    "atom": ["file", "folder", "none"],
+    "is_file_module": False,
     "parent": "verify-rename-path",
 }
 
@@ -42,7 +42,8 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
     summary_path = Path(ctx.output_dir) / cfg["filename"]
     lines = [
         cfg["title"],
-        f"atom: {ctx.atom}",
+        f"is_file: {ctx.is_file}",
+        f"is_dir: {ctx.is_dir}",
         f"original_input: {ctx.original_input}",
         f"working_path: {ctx.working_path}",
     ]

@@ -1,4 +1,4 @@
-"""Module manager: scans modules dir, enforces atom/scope modules meta."""
+"""Module manager: scans modules dir, enforces is_file_module / scope meta."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ VALID_MODULE = """MODULE_META = {
     "name": "Demo",
     "core_version": "2.0.0",
     "tags": ["a", "b"],
-    "atom": ["file"],
+    "is_file_module": True,
 }
 CONFIG_SCHEMA = {"type": "object", "properties": {}}
 
@@ -40,7 +40,7 @@ def test_valid_module_is_cached(modules_dir: Path) -> None:
     modules = mgr.scan_modules()
     assert "demo" in modules
     mod = modules["demo"]
-    assert mod.atom == ("file",)
+    assert mod.is_file_module is True
     assert mod.scope == 1
     assert mod.tags == ("a", "b")
     assert mgr.warnings == []
@@ -65,18 +65,39 @@ def test_module_missing_meta_ignored(modules_dir: Path) -> None:
     assert any("MODULE_META" in w for w in mgr.warnings)
 
 
-def test_module_invalid_atom_ignored(modules_dir: Path) -> None:
-    body = VALID_MODULE.replace('"atom": ["file"]', '"atom": ["bogus"]')
-    _write(modules_dir, "bad_atom.py", body)
+def test_module_invalid_is_file_module_ignored(modules_dir: Path) -> None:
+    body = VALID_MODULE.replace('"is_file_module": True', '"is_file_module": "yes"')
+    _write(modules_dir, "bad_kind.py", body)
     modules = ModuleManager(modules_dir).scan_modules()
-    assert "bogus" not in modules  # slug is still "demo"
-    assert "demo" not in modules  # but the file under that name was rejected
+    assert "demo" not in modules
+
+
+def test_module_missing_is_file_module_ignored(modules_dir: Path) -> None:
+    body = VALID_MODULE.replace('    "is_file_module": True,\n', "")
+    _write(modules_dir, "no_kind.py", body)
+    assert "demo" not in ModuleManager(modules_dir).scan_modules()
+
+
+def test_module_line_kind_accepted(modules_dir: Path) -> None:
+    body = VALID_MODULE.replace('"is_file_module": True', '"is_file_module": False')
+    _write(modules_dir, "line_mod.py", body)
+    modules = ModuleManager(modules_dir).scan_modules()
+    assert "demo" in modules
+    assert modules["demo"].is_file_module is False
 
 
 def test_module_invalid_scope_ignored(modules_dir: Path) -> None:
-    body = VALID_MODULE.replace('"atom": ["file"]', '"atom": ["file"],\n    "scope": 999')
+    body = VALID_MODULE.replace("}\nCONFIG_SCHEMA", '"scope": -1,\n}\nCONFIG_SCHEMA')
     _write(modules_dir, "bad_scope.py", body)
     assert "demo" not in ModuleManager(modules_dir).scan_modules()
+
+
+def test_module_large_scope_accepted(modules_dir: Path) -> None:
+    body = VALID_MODULE.replace("}\nCONFIG_SCHEMA", '"scope": 999,\n}\nCONFIG_SCHEMA')
+    _write(modules_dir, "big_scope.py", body)
+    modules = ModuleManager(modules_dir).scan_modules()
+    assert "demo" in modules
+    assert modules["demo"].scope == 999
 
 
 def test_module_scope_missing_defaults_to_1(modules_dir: Path) -> None:

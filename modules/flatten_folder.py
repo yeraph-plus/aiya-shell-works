@@ -14,7 +14,7 @@ MODULE_META = {
     "name": "递归提取文件",
     "core_version": "2.0.0",
     "tags": ["flatten", "organize"],
-    "atom": ["folder"],
+    "is_file_module": True,
     "description": "递归移动子文件夹文件到根目录，按深度层级添加数字前缀辅助排序。",
 }
 

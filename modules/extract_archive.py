@@ -17,7 +17,7 @@ MODULE_META = {
     "name": "提取图集",
     "core_version": "2.0.0",
     "tags": ["extract", "zip", "gallery", "archive"],
-    "atom": ["file"],
+    "is_file_module": True,
     "description": "从 ZIP 压缩包中随机提取图片文件到输出目录，并生成 info.json 信息文件。",
 }
 

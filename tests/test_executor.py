@@ -1,4 +1,4 @@
-"""PipelineExecutor: atom x scope behavior, per-unit isolation, step contract."""
+"""PipelineExecutor: per-unit isolation, shared scope, step contract, cancellation."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from core import (
     PipelineExecutor,
     PipelineRuntime,
     WorkflowLoader,
+    execute_workflow,
 )
 from core.exceptions import PipelineExecutionError
 
@@ -33,7 +34,7 @@ MODULE_META = {
     "name": "Demo Rename",
     "core_version": "2.0.0",
     "tags": ["demo"],
-    "atom": ["file", "folder"],
+    "is_file_module": True,
 }
 
 CONFIG_SCHEMA = {
@@ -61,7 +62,7 @@ MODULE_META = {
     "name": "Shared Count",
     "core_version": "2.0.0",
     "tags": ["demo"],
-    "atom": ["file"],
+    "is_file_module": True,
     "scope": 0,
     "parent": None,
 }
@@ -90,7 +91,7 @@ MODULE_META = {
     "name": "Demo Echo",
     "core_version": "2.0.0",
     "tags": ["demo"],
-    "atom": ["line"],
+    "is_file_module": False,
 }
 
 CONFIG_SCHEMA = {
@@ -105,6 +106,56 @@ def run(ctx, cfg, runtime):
     return ctx.clone(working_path=fp, extra_files=[*ctx.extra_files, fp])
 """
 
+BATCH_LINE_MODULE = """
+from pathlib import Path
+
+MODULE_META = {
+    "slug": "demo-line-batch",
+    "name": "Demo Line Batch",
+    "core_version": "2.0.0",
+    "tags": ["demo"],
+    "is_file_module": False,
+    "scope": 2,
+}
+
+CONFIG_SCHEMA = {
+    "type": "object",
+    "properties": {}
+}
+
+def run(ctx, cfg, runtime):
+    lines = list(ctx.shared.get("input_lines", []))
+    runtime.log("demo-line-batch", "success", f"batch={len(lines)} lines={'|'.join(lines)}")
+    fp = Path(ctx.output_dir) / f"{lines[0]}_{len(lines)}.txt"
+    fp.write_text("\\n".join(lines), encoding="utf-8")
+    return ctx.clone(working_path=fp, extra_files=[*ctx.extra_files, fp])
+"""
+
+PATH_BATCH_MODULE = """
+from pathlib import Path
+
+MODULE_META = {
+    "slug": "demo-path-batch",
+    "name": "Demo Path Batch",
+    "core_version": "2.0.0",
+    "tags": ["demo"],
+    "is_file_module": True,
+    "scope": 2,
+}
+
+CONFIG_SCHEMA = {
+    "type": "object",
+    "properties": {}
+}
+
+def run(ctx, cfg, runtime):
+    files = sorted(p.name for p in Path(ctx.working_path).rglob("*") if p.is_file())
+    runtime.log("demo-path-batch", "success", f"batch={len(files)} files={'|'.join(files)}")
+    report = Path(ctx.working_path) / "batch.txt"
+    report.write_text("\\n".join(files), encoding="utf-8")
+    return ctx.clone(extra_files=[*ctx.extra_files, report])
+"""
+
 NONE_MODULE = """
 from pathlib import Path
 
@@ -113,7 +164,7 @@ MODULE_META = {
     "name": "Demo None",
     "core_version": "2.0.0",
     "tags": ["demo"],
-    "atom": ["none"],
+    "is_file_module": False,
 }
 CONFIG_SCHEMA = {
     "type": "object",
@@ -135,12 +186,12 @@ MODULE_META = {
     "name": "Demo Synth",
     "core_version": "2.0.0",
     "tags": ["demo"],
-    "atom": ["file", "folder", "line", "none"],
+    "is_file_module": True,
 }
 CONFIG_SCHEMA = {"type": "object", "properties": {}}
 
 def run(ctx, cfg, runtime):
-    runtime.log("demo-synth", "success", f"atom={ctx.atom}")
+    runtime.log("demo-synth", "success", f"is_file={ctx.is_file} is_dir={ctx.is_dir}")
     return ctx
 """
 
@@ -152,6 +203,8 @@ def modules_dir(tmp_path: Path) -> Path:
     (d / "rename.py").write_text(RENAME_MODULE, encoding="utf-8")
     (d / "shared_count.py").write_text(SHARED_COUNT_MODULE, encoding="utf-8")
     (d / "echo.py").write_text(LINE_ECHO_MODULE, encoding="utf-8")
+    (d / "line_batch.py").write_text(BATCH_LINE_MODULE, encoding="utf-8")
+    (d / "path_batch.py").write_text(PATH_BATCH_MODULE, encoding="utf-8")
     (d / "none.py").write_text(NONE_MODULE, encoding="utf-8")
     (d / "synth.py").write_text(SYNTHESIS_MODULE, encoding="utf-8")
     return d
@@ -215,11 +268,11 @@ def test_per_unit_bus_isolation_between_units(modules_dir: Path, tmp_path: Path)
         recurse=True,
     )
     # Look at *run-level* logs (one per unit execution).
-    run_events = [e for e in seen if e.slug == "demo-synth" and "atom=" in e.text]
-    # Each unit emits exactly one "atom=... scope=..." log from synthesize's run().
+    run_events = [e for e in seen if e.slug == "demo-synth" and "is_file=" in e.text]
+    # Each unit emits exactly one "is_file=... is_dir=..." log from synthesize's run().
     assert run_events, "synth run-level logs must be present"
     assert len(run_events) == 2
-    assert all("atom=file" in e.text for e in run_events)
+    assert all("is_file=True" in e.text for e in run_events)
 
 
 def test_per_unit_isolation_no_event_bleeds(modules_dir: Path, tmp_path: Path) -> None:
@@ -252,8 +305,8 @@ def test_per_unit_isolation_no_event_bleeds(modules_dir: Path, tmp_path: Path) -
     # After execution, the active bus contains only the last unit's events.
     # The active bus contains ONLY the last unit's events; run-level events from
     # earlier units must not appear.
-    run_events = [e for e in runtime.bus.iterate() if e.slug == "demo-synth" and "atom=" in e.text]
-    # Multiple files processed (3 units), but only the last unit's "atom=..."
+    run_events = [e for e in runtime.bus.iterate() if e.slug == "demo-synth" and "is_file=" in e.text]
+    # Multiple files processed (3 units), but only the last unit's run log
     # event remains in the active bus.
     assert len(run_events) == 1, "only the last unit's run event remains"
 
@@ -378,6 +431,86 @@ def test_atom_line_per_unit_each_line_isits_own_unit(modules_dir: Path, tmp_path
     assert len(files) == 3
 
 
+def test_atom_line_scope_batches_lines_as_lists(modules_dir: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    _make_wf(
+        tmp_path / "workflows",
+        "wf.yaml",
+        atom="line",
+        scope=2,
+        recurse=False,
+        steps=[{"module": "demo-line-batch", "name": "echo-batch", "params": {}}],
+    )
+    runtime = PipelineRuntime()
+    executor = PipelineExecutor(ModuleManager(modules_dir), runtime=runtime)
+    summary = executor.execute(
+        WorkflowLoader(tmp_path / "workflows").load("wf.yaml"),
+        output_dir=out,
+        lines_text="alpha\nbeta\ngamma",
+    )
+    assert summary["success"]
+    assert summary["successful_units"] == 2
+    assert (out / "alpha_2.txt").read_text(encoding="utf-8") == "alpha\nbeta"
+    assert (out / "gamma_1.txt").read_text(encoding="utf-8") == "gamma"
+    active_bus_events = [e for e in runtime.bus.iterate() if e.slug == "demo-line-batch" and "batch=" in e.text]
+    assert len(active_bus_events) == 1
+    assert "gamma" in active_bus_events[0].text
+
+
+def test_scope_zero_line_keeps_all_lines_in_one_list_batch(modules_dir: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    _make_wf(
+        tmp_path / "workflows",
+        "wf.yaml",
+        atom="line",
+        scope=0,
+        recurse=False,
+        steps=[{"module": "demo-line-batch", "name": "echo-batch", "params": {}}],
+    )
+    executor = PipelineExecutor(ModuleManager(modules_dir), runtime=PipelineRuntime())
+    summary = executor.execute(
+        WorkflowLoader(tmp_path / "workflows").load("wf.yaml"),
+        output_dir=out,
+        lines_text="alpha\nbeta\ngamma",
+    )
+    assert summary["success"]
+    assert summary["successful_units"] == 1
+    assert (out / "alpha_3.txt").read_text(encoding="utf-8") == "alpha\nbeta\ngamma"
+
+
+def test_scope_batches_path_inputs_into_isolated_worktrees(modules_dir: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    _make_wf(
+        tmp_path / "workflows",
+        "wf.yaml",
+        atom="file",
+        scope=2,
+        recurse=False,
+        steps=[{"module": "demo-path-batch", "name": "path-batch", "params": {}}],
+    )
+    a = tmp_path / "a.txt"
+    a.write_text("a", encoding="utf-8")
+    b = tmp_path / "b.txt"
+    b.write_text("b", encoding="utf-8")
+    c = tmp_path / "c.txt"
+    c.write_text("c", encoding="utf-8")
+    runtime = PipelineRuntime()
+    executor = PipelineExecutor(ModuleManager(modules_dir), runtime=runtime)
+    summary = executor.execute(
+        WorkflowLoader(tmp_path / "workflows").load("wf.yaml"),
+        output_dir=out,
+        files=[a, b, c],
+    )
+    assert summary["success"]
+    assert summary["successful_units"] == 2
+    reports = sorted(out.rglob("batch.txt"))
+    assert len(reports) == 2
+    assert reports[0].parent.name == "_batch_0001"
+    assert reports[1].parent.name == "_batch_0002"
+    active_bus_events = [e for e in runtime.bus.iterate() if e.slug == "demo-path-batch" and "batch=" in e.text]
+    assert len(active_bus_events) == 1
+
+
 # ---------------------------------------------------------------------------
 # Step contract: context / None / dict-with-context / invalid
 # ---------------------------------------------------------------------------
@@ -388,7 +521,7 @@ MODULE_META = {
     "name": "Bad Return",
     "core_version": "2.0.0",
     "tags": ["demo"],
-    "atom": ["none"],
+    "is_file_module": False,
 }
 CONFIG_SCHEMA = {"type": "object", "properties": {}}
 
@@ -402,7 +535,7 @@ MODULE_META = {
     "name": "None Return",
     "core_version": "2.0.0",
     "tags": ["demo"],
-    "atom": ["none"],
+    "is_file_module": False,
 }
 CONFIG_SCHEMA = {"type": "object", "properties": {}}
 
@@ -509,7 +642,7 @@ MODULE_META = {
     "name": "Demo Summary",
     "core_version": "2.0.0",
     "tags": ["demo"],
-    "atom": ["file"],
+    "is_file_module": True,
 }
 
 CONFIG_SCHEMA = {"type": "object", "properties": {}}
@@ -611,28 +744,6 @@ def test_param_validation_failure_fails_setup(modules_dir: Path, tmp_path: Path)
 
 
 # ---------------------------------------------------------------------------
-# Unsupported atom / scope mismatch
-# ---------------------------------------------------------------------------
-
-
-def test_step_atom_not_supported_by_module_rejected(modules_dir: Path, tmp_path: Path) -> None:
-    # demo-rename supports atom ["file","folder"]; asking it to run with atom=line must fail.
-    _make_wf(
-        tmp_path / "workflows",
-        "wf.yaml",
-        atom="line",
-        scope=1,
-        recurse=False,
-        steps=[{"module": "demo-rename", "name": "x", "params": {}}],
-    )
-    executor = PipelineExecutor(ModuleManager(modules_dir))
-    with pytest.raises(PipelineExecutionError):
-        executor.execute(
-            WorkflowLoader(tmp_path / "workflows").load("wf.yaml"), output_dir=tmp_path / "out", lines_text="a"
-        )
-
-
-# ---------------------------------------------------------------------------
 # Regression: event_listener survives replace_bus across per-unit units
 # ---------------------------------------------------------------------------
 
@@ -689,38 +800,22 @@ MODULE_META = {
     "name": "Demo Folder",
     "core_version": "2.0.0",
     "tags": ["demo"],
-    "atom": ["folder"],
+    "is_file_module": True,
 }
 CONFIG_SCHEMA = {"type": "object", "properties": {}}
 
 def run(ctx, cfg, runtime):
-    runtime.log("demo-folder", "success", f"atom={ctx.atom} working={ctx.working_path.name}")
+    runtime.log("demo-folder", "success", f"is_dir={ctx.is_dir} working={ctx.working_path.name}")
     return ctx
 """
 
 
-def test_atom_folder_rejects_file_input(modules_dir: Path, tmp_path: Path) -> None:
-    """atom=folder workflow must reject file inputs."""
+def test_folder_input_runs_single_unit(modules_dir: Path, tmp_path: Path) -> None:
+    """Directory input (recurse=false) → one folder-shaped unit through executor.
 
-    (modules_dir / "folder_mod.py").write_text(FOLDER_MODULE, encoding="utf-8")
-    out = tmp_path / "out"
-    _make_wf(
-        tmp_path / "workflows",
-        "wf.yaml",
-        atom="folder",
-        scope=1,
-        recurse=False,
-        steps=[{"module": "demo-folder", "name": "f", "params": {}}],
-    )
-    f = tmp_path / "a.txt"
-    f.write_text("x", encoding="utf-8")
-    executor = PipelineExecutor(ModuleManager(modules_dir))
-    with pytest.raises(PipelineExecutionError):
-        executor.execute(WorkflowLoader(tmp_path / "workflows").load("wf.yaml"), output_dir=out, files=[f])
-
-
-def test_atom_folder_with_dir_input_runs_single_unit(modules_dir: Path, tmp_path: Path) -> None:
-    """atom=folder + directory input → one folder unit through executor."""
+    The kernel no longer rejects file inputs for folder workflows (the plan
+    compat check was removed); this test only exercises the directory path.
+    """
 
     (modules_dir / "folder_mod.py").write_text(FOLDER_MODULE, encoding="utf-8")
     out = tmp_path / "out"
@@ -742,4 +837,47 @@ def test_atom_folder_with_dir_input_runs_single_unit(modules_dir: Path, tmp_path
     assert summary["successful_units"] == 1
     events = [e for e in r.bus.iterate() if e.slug == "demo-folder" and "working=" in e.text]
     assert events
-    assert "working=" in events[0].text
+    assert "is_dir=True" in events[0].text
+
+
+def test_file_input_works_in_folder_declared_workflow(modules_dir: Path, tmp_path: Path) -> None:
+    """File input now flows through a folder-tagged workflow (kernel ignores atom)."""
+
+    (modules_dir / "folder_mod.py").write_text(FOLDER_MODULE, encoding="utf-8")
+    out = tmp_path / "out"
+    _make_wf(
+        tmp_path / "workflows",
+        "wf.yaml",
+        atom="folder",
+        scope=1,
+        recurse=False,
+        steps=[{"module": "demo-folder", "name": "f", "params": {}}],
+    )
+    f = tmp_path / "a.txt"
+    f.write_text("x", encoding="utf-8")
+    executor = PipelineExecutor(ModuleManager(modules_dir))
+    summary = executor.execute(WorkflowLoader(tmp_path / "workflows").load("wf.yaml"), output_dir=out, files=[f])
+    assert summary["success"]
+
+
+def test_execute_workflow_accepts_explicit_workflows_dir(modules_dir: Path, tmp_path: Path, monkeypatch) -> None:
+    out = tmp_path / "out"
+    workflows_dir = tmp_path / "workflows"
+    _make_wf(
+        workflows_dir,
+        "wf.yaml",
+        atom="none",
+        scope=1,
+        recurse=False,
+        steps=[{"module": "demo-none", "name": "create", "params": {"filename": "ok.txt", "content": "done"}}],
+    )
+    monkeypatch.chdir(tmp_path)
+
+    summary = execute_workflow(
+        "wf.yaml",
+        workflows_dir=workflows_dir,
+        modules_dir=modules_dir,
+        output_dir=out,
+    )
+    assert summary["success"]
+    assert (out / "ok.txt").read_text(encoding="utf-8") == "done"

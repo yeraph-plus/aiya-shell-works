@@ -15,7 +15,7 @@ MODULE_META = {
     "name": "Gallery 重命名",
     "core_version": "2.0.0",
     "tags": ["rename", "gallery", "sort"],
-    "atom": ["folder"],
+    "is_file_module": True,
     "description": "按文件类型分组建模重命名：jpg/png 无前缀，视频统一 VIDEO_ 队列，其余格式按自身后缀前缀。",
 }
 

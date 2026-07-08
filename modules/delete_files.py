@@ -15,7 +15,7 @@ MODULE_META = {
     "name": "删除无用文件",
     "core_version": "2.0.0",
     "tags": ["cleanup", "delete"],
-    "atom": ["file", "folder"],
+    "is_file_module": True,
     "description": "按 glob 模式匹配并硬删除 .txt/.url/.html/Thumbs.db/desktop.ini 等无用文件。",
 }
 
@@ -38,8 +38,8 @@ def _parse_patterns(patterns_str: str) -> list[str]:
 
 def _collect_targets(ctx: PipelineContext) -> list[Path]:
     wp = Path(ctx.working_path)
-    if ctx.atom == "file":
-        return [wp] if wp.is_file() else []
+    if wp.is_file():
+        return [wp]
     if wp.is_dir():
         return [f for f in wp.iterdir() if f.is_file()]
     return []

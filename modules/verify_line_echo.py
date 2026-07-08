@@ -1,9 +1,9 @@
-"""line-echo — atom=line + scope=per-unit example module.
+"""line-echo — line-input + per-unit example module.
 
 Each non-empty text line becomes its own unit, with the raw line stored in
-``ctx.shared["input_line"]`` (instruction injected by the executor).  The
-module writes a per-line file whose name hashes from the line content to
-avoid collisions in ``output_dir``.
+``ctx.shared["input_line"]`` (injected by the executor).  The module writes
+a per-line file whose name hashes from the line content to avoid
+collisions in ``output_dir``.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ MODULE_META = {
     "description": "Echo a single input text line into a file in output_dir.",
     "core_version": "2.0.0",
     "tags": ["example", "echo"],
-    "atom": ["line"],
+    "is_file_module": False,
 }
 
 CONFIG_SCHEMA = {

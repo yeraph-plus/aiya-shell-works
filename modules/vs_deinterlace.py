@@ -18,7 +18,7 @@ MODULE_META = {
     "name": "VapourSynth 去隔行",
     "core_version": "2.0.0",
     "tags": ["video", "vapoursynth", "deinterlace", "ivtc"],
-    "atom": ["file"],
+    "is_file_module": True,
     "parent": None,
     "description": "使用 VapourSynth 对隔行视频进行去隔行处理，支持 BWDIF 双倍帧率去隔行和 VIVTC 反胶卷过带。",
 }

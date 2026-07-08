@@ -1,4 +1,4 @@
-"""rename-path — atom=file / atom=folder example module.
+"""rename-path — file/folder path rename example module.
 
 Renames a working copy in place and records the rename in
 ``ctx.shared["renames"]`` so downstream modules (e.g. ``write-summary``) can
@@ -21,7 +21,7 @@ MODULE_META = {
     "description": "Prepend/append a prefix or suffix to the working path.",
     "core_version": "2.0.0",
     "tags": ["example", "rename"],
-    "atom": ["file", "folder"],
+    "is_file_module": True,
 }
 
 CONFIG_SCHEMA = {

@@ -1,4 +1,4 @@
-"""run-external-tool — atom=file + scope=per-unit example module.
+"""run-external-tool — file path input + per-unit example module.
 
 Demonstrates the runtime.spawn pipeline for invoking external binaries:
 the same path used by FFmpeg / VapourSynth modules, but here against the
@@ -26,7 +26,7 @@ MODULE_META = {
     "description": "Invoke an external CLI binary on each working file; verification helper using resources/mock_tool.",
     "core_version": "2.0.0",
     "tags": ["example", "external"],
-    "atom": ["file"],
+    "is_file_module": True,
 }
 
 CONFIG_SCHEMA = {

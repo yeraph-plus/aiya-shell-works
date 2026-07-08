@@ -6,7 +6,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from main_cli import main
+import main as main_module
+from main import main
+from core.exceptions import PipelineExecutionError
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,7 +26,7 @@ def test_cli_list_modules_returns_0(tmp_path: Path, capsys) -> None:
 MODULE_META = {
     "slug": "cli-demo", "name": "CLI Demo",
     "core_version": "2.0.0", "tags": ["t"],
-    "atom": ["file"],
+    "is_file_module": True,
 }
 CONFIG_SCHEMA = {"type": "object", "properties": {}}
 def run(ctx, cfg, runtime): return ctx
@@ -48,7 +50,7 @@ def test_cli_list_workflows_returns_0(tmp_path: Path, capsys) -> None:
 
 
 def test_cli_runs_none_workflow_succeeds(tmp_path: Path, capsys) -> None:
-    """End-to-end: build a tiny module + workflow and run via main_cli."""
+    """End-to-end: build a tiny module + workflow and run via main."""
 
     modules = tmp_path / "modules"
     modules.mkdir()
@@ -60,7 +62,7 @@ def test_cli_runs_none_workflow_succeeds(tmp_path: Path, capsys) -> None:
 from pathlib import Path
 MODULE_META = {
     "slug": "mk", "name": "MK", "core_version": "2.0.0",
-     "tags": ["t"], "atom": ["none"],
+     "tags": ["t"], "is_file_module": False,
 }
 CONFIG_SCHEMA = {
     "type": "object",
@@ -129,7 +131,7 @@ def test_cli_subprocess_invocation_does_not_import_gui() -> None:
     """Ensure the CLI module imports cleanly without PySide6 installed."""
 
     result = subprocess.run(
-        [sys.executable, "-c", "import main_cli; print('ok')"],
+        [sys.executable, "-c", "import main; print('ok')"],
         capture_output=True,
         text=True,
         cwd=str(REPO_ROOT),
@@ -149,7 +151,7 @@ from pathlib import Path
 MODULE_META = {
     "slug": "echo", "name": "Echo",
     "core_version": "2.0.0", "tags": [],
-    "atom": ["line"],
+    "is_file_module": False,
 }
 CONFIG_SCHEMA = {"type": "object", "properties": {}}
 def run(ctx, cfg, runtime):
@@ -189,3 +191,35 @@ steps:
     assert code == 0
     files = list(out.glob("*.txt"))
     assert len(files) == 2
+
+
+def test_cli_closes_runtime_when_execution_raises(monkeypatch, tmp_path: Path) -> None:
+    closed: list[bool] = []
+
+    class FakeRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def close(self) -> None:
+            closed.append(True)
+
+    class FakeExecutor:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def execute(self, *args, **kwargs):
+            raise PipelineExecutionError("boom")
+
+    monkeypatch.setattr(main_module, "PipelineRuntime", FakeRuntime)
+    monkeypatch.setattr(main_module, "PipelineExecutor", FakeExecutor)
+    monkeypatch.setattr(main_module, "ModuleManager", lambda *args, **kwargs: object())
+
+    code = main_module.main(
+        [
+            "--output-dir",
+            str(tmp_path / "out"),
+            "missing.yaml",
+        ]
+    )
+    assert code == 3
+    assert closed == [True]

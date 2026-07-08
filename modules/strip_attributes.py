@@ -16,7 +16,7 @@ MODULE_META = {
     "name": "清除文件属性",
     "core_version": "2.0.0",
     "tags": ["attribute", "system"],
-    "atom": ["file", "folder"],
+    "is_file_module": True,
     "description": "清除文件的只读/隐藏属性，确保后续操作不受文件属性限制。",
 }
 
@@ -61,8 +61,8 @@ def _set_attrs(path: str, attrs: int) -> bool:
 
 def _collect_targets(ctx: PipelineContext) -> list[Path]:
     wp = Path(ctx.working_path)
-    if ctx.atom == "file":
-        return [wp] if wp.is_file() else []
+    if wp.is_file():
+        return [wp]
     if wp.is_dir():
         return [f for f in wp.iterdir() if f.is_file()]
     return []

@@ -18,7 +18,7 @@ MODULE_META = {
     "name": "VapourSynth 补帧",
     "core_version": "2.0.0",
     "tags": ["video", "vapoursynth", "interpolation", "rife", "ml"],
-    "atom": ["file"],
+    "is_file_module": True,
     "parent": "vs-deinterlace",
     "description": "使用 VapourSynth + vs-mlrt RIFE 模型进行 AI 智能补帧，支持 2x/4x/8x 帧率倍增。",
 }

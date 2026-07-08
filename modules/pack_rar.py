@@ -14,7 +14,7 @@ MODULE_META = {
     "name": "RAR 打包",
     "core_version": "2.0.0",
     "tags": ["archive", "compress", "rar"],
-    "atom": ["folder"],
+    "is_file_module": True,
     "description": "调用 WinRAR 将文件夹打包为 .rar 压缩包。",
 }
 

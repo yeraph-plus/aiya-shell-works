@@ -1,6 +1,6 @@
 """End-to-end acceptance runner for shell-refactor.
 
-Spawns ``python main_cli.py`` against each of the six example workflows and
+Spawns ``python main.py`` against each of the six example workflows and
 checks that the expected output files exist (and the file *count* matches).
 Does NOT read file contents — that's pytest's job.  Exit codes:
 
@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULES = ROOT / "modules"
 WORKFLOWS = ROOT / "workflows"
 RESOURCES = ROOT / "resources"
-CLI = ROOT / "main_cli.py"
+CLI = ROOT / "main.py"
 
 WORK = Path(tempfile.mkdtemp(prefix="shellworker-verify-"))
 FAILS: list[str] = []

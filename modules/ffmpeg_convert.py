@@ -14,7 +14,7 @@ MODULE_META = {
     "name": "FFmpeg 转码",
     "core_version": "2.0.0",
     "tags": ["ffmpeg", "convert", "video", "audio"],
-    "atom": ["file", "folder"],
+    "is_file_module": True,
     "description": "使用 FFmpeg 转换媒体文件格式、调整编码参数、分辨率、帧率与像素格式，支持硬件加速编码。",
 }
 
@@ -251,8 +251,8 @@ def _resolve_ffmpeg_path(cfg: dict) -> str | None:
 
 def _collect_targets(ctx: PipelineContext) -> list[Path]:
     wp = Path(ctx.working_path)
-    if ctx.atom == "file":
-        return [wp] if wp.is_file() and wp.suffix.lower() in _SUPPORTED_EXTENSIONS else []
+    if wp.is_file():
+        return [wp] if wp.suffix.lower() in _SUPPORTED_EXTENSIONS else []
     if wp.is_dir():
         return sorted(f for f in wp.iterdir() if f.is_file() and f.suffix.lower() in _SUPPORTED_EXTENSIONS)
     return []

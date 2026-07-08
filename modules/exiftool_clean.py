@@ -14,7 +14,7 @@ MODULE_META = {
     "name": "清除EXIF元数据",
     "core_version": "2.0.0",
     "tags": ["exif", "metadata", "privacy"],
-    "atom": ["file", "folder"],
+    "is_file_module": True,
     "description": "使用 ExifTool 清除图片/视频/PDF 文件的元数据。",
 }
 
@@ -116,8 +116,8 @@ def _resolve_exiftool_path(cfg: dict[str, Any]) -> str | None:
 
 def _collect_targets(ctx: PipelineContext, cfg: dict[str, Any]) -> list[Path]:
     wp = Path(ctx.working_path)
-    if ctx.atom == "file":
-        return [wp] if wp.is_file() and wp.suffix.lower() in _SUPPORTED_EXTENSIONS else []
+    if wp.is_file():
+        return [wp] if wp.suffix.lower() in _SUPPORTED_EXTENSIONS else []
     if wp.is_dir():
         if cfg.get("recursive", False):
             return [wp]
@@ -151,7 +151,7 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
     if cfg.get("keep_datetime", False):
         cmd.extend(["-tagsfromfile", "@", "-DateTimeOriginal", "-CreateDate", "-ModifyDate"])
 
-    if cfg.get("recursive", False) and ctx.atom == "folder":
+    if cfg.get("recursive", False) and ctx.is_dir:
         cmd.append("-r")
         cmd.append(str(ctx.working_path))
     else:

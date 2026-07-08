@@ -1,4 +1,4 @@
-"""cycle-counter — atom=file + scope=shared example module.
+"""cycle-counter — file path input + scope=shared example module.
 
 The classic "all inputs share one context" case.  Because scope=shared
 merges every input file into ``output_dir`` (the working tree), this module
@@ -21,7 +21,7 @@ MODULE_META = {
     "description": "Count files inside the merged working tree and write a report.",
     "core_version": "2.0.0",
     "tags": ["example", "counter"],
-    "atom": ["file"],
+    "is_file_module": True,
     "scope": 0,
 }
 

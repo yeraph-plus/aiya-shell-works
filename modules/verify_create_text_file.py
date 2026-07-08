@@ -1,8 +1,8 @@
-"""create-text-file — minimal ``atom=none`` example module.
+"""create-text-file — minimal no-input example module.
 
 Creates a single text file in ``output_dir``.  Demonstrates the bare-minimum
-``run(ctx, cfg, runtime)`` contract and the ``atom=none`` path (one empty
-unit, no input needed).
+``run(ctx, cfg, runtime)`` contract for the no-input path (one empty unit,
+no input needed).
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ MODULE_META = {
     "description": "Write a single text file into the output directory.",
     "core_version": "2.0.0",
     "tags": ["example", "io"],
-    "atom": ["none"],
+    "is_file_module": False,
 }
 
 CONFIG_SCHEMA = {

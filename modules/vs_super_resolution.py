@@ -18,7 +18,7 @@ MODULE_META = {
     "name": "VapourSynth 超分",
     "core_version": "2.0.0",
     "tags": ["video", "vapoursynth", "super-resolution", "esrgan", "swinir", "ml"],
-    "atom": ["file"],
+    "is_file_module": True,
     "parent": "vs-frame-interpolate",
     "description": "使用 VapourSynth + vs-mlrt 对视频进行 AI 超分辨率处理，支持 RealESRGAN / SwinIR 模型。",
 }

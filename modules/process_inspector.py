@@ -24,7 +24,7 @@ MODULE_META = {
     "name": "进程检索与文件解锁",
     "core_version": "2.0.0",
     "tags": ["system", "process", "unlock"],
-    "atom": ["file", "folder"],
+    "is_file_module": True,
     "scope": 1,
     "description": "跨平台检测并释放其他进程对文件的占用锁定。detect 仅报告，release 终止锁定进程。",
 }

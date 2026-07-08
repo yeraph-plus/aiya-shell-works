@@ -18,7 +18,7 @@ MODULE_META = {
     "name": "FFmpeg 合成编码",
     "core_version": "2.0.0",
     "tags": ["video", "ffmpeg", "encode", "compose"],
-    "atom": ["file", "folder"],
+    "is_file_module": True,
     "parent": "vs-super-resolution",
     "description": "使用 FFmpeg 将 Y4M 原始流或帧序列合成为最终编码视频，支持多种编码器和参数。",
 }

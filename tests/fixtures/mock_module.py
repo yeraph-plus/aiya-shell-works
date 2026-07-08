@@ -18,7 +18,7 @@ MODULE_META = {
     "name": "Mock Probe",
     "core_version": "2.0.0",
     "tags": ["-test"],
-    "atom": ["file", "folder", "line", "none"],
+    "is_file_module": True,
 }
 
 CONFIG_SCHEMA = {
@@ -32,7 +32,8 @@ CONFIG_SCHEMA = {
 def run(ctx, cfg, runtime):
     CALLS.append(
         {
-            "atom": ctx.atom,
+            "is_file": ctx.is_file,
+            "is_dir": ctx.is_dir,
             "marker": cfg.get("marker", ""),
             "working_path": str(ctx.working_path),
             "shared": dict(ctx.shared),
@@ -50,7 +51,7 @@ EVENT_PROBE_META = {
     "name": "Event Probe",
     "core_version": "2.0.0",
     "tags": ["-test"],
-    "atom": ["file", "folder", "line", "none"],
+    "is_file_module": True,
 }
 
 EVENT_PROBE_SCHEMA = {

@@ -114,6 +114,32 @@ def test_runtime_sessions_cleared_after_run(tmp_path: Path) -> None:
     assert len(runtime.sessions) == 0
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="winpty fallback only applies on Windows")
+def test_runtime_spawn_falls_back_when_winpty_spawn_fails(tmp_path: Path, monkeypatch) -> None:
+    runtime = PipelineRuntime()
+    tool = _mock_tool()
+    if not tool.exists():  # pragma: no cover
+        pytest.skip("mock tool missing")
+    out = tmp_path / "x.txt"
+    out.write_text("y", encoding="utf-8")
+
+    import winpty
+
+    def boom(*args, **kwargs):
+        raise winpty.WinptyError("boom")
+
+    monkeypatch.setattr(winpty.PtyProcess, "spawn", staticmethod(boom))
+    events: list = []
+    runtime.subscribe(events.append)
+
+    result = runtime.spawn([str(tool), str(out)])
+    assert result.is_success
+    assert any(e.type == "warning" and "回退到子进程模式" in e.text for e in events)
+    started = [e for e in events if e.text == "terminal:started"]
+    assert started
+    assert started[0].data["backend"] == "subprocess"
+
+
 def test_runtime_close_terminates_outstanding_sessions() -> None:
     """Manually craft a no-op session and verify close_all clears it."""
 
