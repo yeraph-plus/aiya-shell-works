@@ -32,20 +32,18 @@ CONFIG_SCHEMA = {
             "max": 100,
             "description": "从每个 ZIP 中随机提取的图片数量。不足时全取。",
         },
-        "image_extensions": {
+        "category": {
             "type": "str",
-            "title": "图片扩展名",
-            "default": "jpg jpeg png gif bmp webp",
-            "description": "空格分隔的图片文件扩展名列表。",
-        },
-        "video_extensions": {
-            "type": "str",
-            "title": "视频扩展名",
-            "default": "mp4 mov mkv wmv flv webm avi",
-            "description": "空格分隔的视频文件扩展名列表（仅用于统计）。",
+            "title": "分类",
+            "default": "Gallery",
+            "description": "写入 info.json 的 category 字段值。",
         },
     },
 }
+
+
+_IMAGE_EXTENSIONS = _parse_extensions("jpg jpeg png gif bmp webp")
+_VIDEO_EXTENSIONS = _parse_extensions("mp4 mov mkv wmv flv webm avi")
 
 
 def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
@@ -60,24 +58,26 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
         )
         return ctx
 
-    image_exts = _parse_extensions(cfg.get("image_extensions", "jpg jpeg png gif bmp webp"))
-    video_exts = _parse_extensions(cfg.get("video_extensions", "mp4 mov mkv wmv flv webm avi"))
     extract_count = int(cfg.get("extract_count", 6))
+    category = cfg.get("category", "Gallery")
 
     try:
         with zipfile.ZipFile(working_path, "r") as zf:
             all_entries = [n for n in zf.infolist() if not n.is_dir()]
             image_files = []
             video_files = []
+            other_files = []
             total_uncompressed = 0
 
             for entry in all_entries:
                 total_uncompressed += entry.file_size
                 ext = Path(entry.filename).suffix.lower().lstrip(".")
-                if ext in image_exts:
+                if ext in _IMAGE_EXTENSIONS:
                     image_files.append(entry.filename)
-                elif ext in video_exts:
+                elif ext in _VIDEO_EXTENSIONS:
                     video_files.append(entry.filename)
+                else:
+                    other_files.append(entry.filename)
 
             if not image_files:
                 runtime.log(
@@ -112,24 +112,16 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
 
     info = {
         "title": stem,
-        "category": "Gallery",
+        "category": category,
         "language": "Chinese",
         "file_count": {
             "image": len(image_files),
             "video": len(video_files),
+            "other": len(other_files),
         },
         "file_size": total_uncompressed,
         "thumbnail": "./.thumb",
-        "tags": {
-            "artist": [],
-            "group": [],
-            "parody": [],
-            "character": [],
-            "female": [],
-            "male": [],
-            "mixed": [],
-            "other": [],
-        },
+        "tags": {}
     }
     info_path = subfolder / "info.json"
     info_path.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -142,11 +134,12 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
     runtime.log(
         "extract-archive",
         "success",
-        f"已从 {working_path.name} 提取 {selected_count} 张图片到 {subfolder.name}/（图片 {len(image_files)} 张，视频 {len(video_files)} 个，体积 {total_uncompressed} 字节）",  # noqa: E501
+        f"已从 {working_path.name} 提取 {selected_count} 张图片到 {subfolder.name}/（图片 {len(image_files)} 张，视频 {len(video_files)} 个，其他 {len(other_files)} 个，体积 {total_uncompressed} 字节）",  # noqa: E501
         {
             "extracted": selected_count,
             "total_images": len(image_files),
             "total_videos": len(video_files),
+            "total_other": len(other_files),
             "total_size": total_uncompressed,
             "subfolder": str(subfolder),
         },

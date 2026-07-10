@@ -1,9 +1,4 @@
-"""Read-only terminal window for PTY-backed subprocess output.
-
-The session is fetched from the active ``PipelineRuntime`` rather than from
-a module-level singleton (the latter breaks under multiprocessing).  The
-main window passes the runtime reference when it constructs the dialog.
-"""
+"""Read-only terminal window for PTY-backed subprocess output."""
 
 from __future__ import annotations
 
@@ -17,6 +12,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from core import get_session
 
 if TYPE_CHECKING:
     from core import PipelineRuntime
@@ -32,7 +29,8 @@ class TerminalWindow(QDialog):
         self,
         session_id: str,
         command: str,
-        runtime: PipelineRuntime,
+        *,
+        runtime: PipelineRuntime | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -41,7 +39,6 @@ class TerminalWindow(QDialog):
         self.setWindowTitle(f"终端 — {command}")
         self._dismissed = False
         self.resize(680, 440)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setWindowFlags(
             Qt.WindowType.Window
             | Qt.WindowType.WindowCloseButtonHint
@@ -49,12 +46,14 @@ class TerminalWindow(QDialog):
             | Qt.WindowType.WindowSystemMenuHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+
         self._build_ui()
         self.output_received.connect(self._append_output)
         self.session_finished.connect(self._on_finished)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
+
         self._output = QPlainTextEdit()
         self._output.setReadOnly(True)
         font = QFont("Consolas", 10)
@@ -65,17 +64,18 @@ class TerminalWindow(QDialog):
 
     def closeEvent(self, event) -> None:
         self._dismissed = True
-        session = self._runtime.sessions.get(self._session_id)
-        if session is not None and session.exit_code is None:
-            session.terminate()
+        if self._runtime is not None:
+            session = get_session(self._runtime, self._session_id)
+            if session is not None and session.exit_code is None:
+                session.terminate()
         super().closeEvent(event)
 
     def append_output(self, text: str) -> None:
         """Thread-safe: emit signal so text lands on the GUI thread."""
-
         self.output_received.emit(text)
 
     def notify_finished(self, exit_code: int) -> None:
+        """Thread-safe: emit signal so GUI thread handles completion."""
         self.session_finished.emit(exit_code)
 
     def _append_output(self, text: str) -> None:

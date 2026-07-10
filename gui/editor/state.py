@@ -52,18 +52,23 @@ def filter_modules(
     modules: Mapping[str, ModuleDefinition],
     *,
     active_tags: set[str] | None = None,
-    active_atom: str | None = None,
-    active_scope: int | None = None,
+    expected_is_file_module: bool | None = None,
 ) -> list[ModuleDefinition]:
-    """Filter and sort modules by tag AND atom AND scope compatibility."""
+    """Filter and sort modules by tag AND ``is_file_module`` kind.
+
+    ``expected_is_file_module`` is a GUI-only hint derived from the workflow's
+    input mode: ``True`` for path (file/folder) workflows, ``False`` for
+    line/none workflows.  When provided, modules whose ``is_file_module``
+    differs are excluded (hard distinction — no fallback "show all" switch).
+    The kernel performs NO atom/scope compatibility check on modules; this
+    filter only shapes the editor's available-module list.
+    """
 
     filtered: list[ModuleDefinition] = []
     for definition in modules.values():
         if active_tags and not (active_tags <= set(definition.tags)):
             continue
-        if active_atom and active_atom not in definition.atom:
-            continue
-        if active_scope and active_scope != definition.scope:
+        if expected_is_file_module is not None and definition.is_file_module != expected_is_file_module:
             continue
         filtered.append(definition)
 
@@ -175,7 +180,7 @@ class WorkflowDraft:
         return cls(
             name=workflow.meta.name,
             description=workflow.meta.description,
-            atom=workflow.atom,
+            atom=workflow.atom or "file",
             scope=workflow.scope,
             recurse=workflow.recurse,
             steps=[

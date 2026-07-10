@@ -21,9 +21,10 @@ flowchart LR
 ## 安装
 
 ```bash
-pip install -r requirements.txt     # 内核 + CLI（仅 PyYAML）
-pip install '.[gui]'                # + PySide6 桌面 GUI
-pip install '.[win]'                # + pywinpty（Windows PTY）
+pip install .                        # 内核 + CLI（仅 PyYAML）
+pip install ".[gui]"                 # + PySide6 桌面 GUI
+pip install ".[win]"                 # + pywinpty（Windows PTY）
+pip install ".[image]"               # + Pillow 图片处理
 ```
 
 Linux / macOS 上 CLI 零 GUI 依赖，PTY 由 stdlib 提供。
@@ -35,26 +36,26 @@ Linux / macOS 上 CLI 零 GUI 依赖，PTY 由 stdlib 提供。
 python main.py --list-workflows
 python main.py --list-modules
 
-# 2. 无输入创建文件（atom=none）
+# 2. 爬虫工作流创建文件
 python main.py example-create.yaml --output-dir ./out
 # → out/hello.txt
 
-# 3. 批量重命名文件（atom=file, recurse=true）
+# 3. 批量重命名文件（recurse=true, per-unit）
 python main.py example-file-rename.yaml \
   --files ./my_data --recurse --output-dir ./out
 # → 每个文件被安全拷贝后重命名，保留相对目录结构
 
-# 4. 整个文件夹作为单元（atom=folder）
+# 4. 整个文件夹作为单元
 python main.py example-folder-rename.yaml \
   --files ./my_folder --output-dir ./out
 # → 文件夹整体作为一个任务，拷贝后重命名
 
-# 5. 合并计数（atom=file, scope=0）
+# 5. 合并计数（scope=0）
 python main.py example-cycle-count.yaml \
   --files ./my_data --recurse --output-dir ./out
 # → 所有文件合并到产物目录，运行一次，输出 count.txt
 
-# 6. 逐行处理文本（atom=line）
+# 6. 逐行处理文本
 python main.py example-line-echo.yaml \
   --lines "alpha"$'\n'"beta" --output-dir ./out
 # → 每行作为一个独立任务
@@ -66,13 +67,13 @@ python main.py example-external-tool.yaml \
 
 ## 核心模型
 
-每个工作流由三个正交参数控制执行行为：
+内核**根据实际输入自动推导执行形状**。CLI 按 `--files` 优先、`--lines` 次之、皆空即"无输入"识别输入模式。scope（YAML 字段）决定多少个输入共享一个上下文；recurse（CLI 参数）控制目录展开。YAML 中的 `atom` 字段为可选 GUI 元数据，仅用于桌面端输入面板选择与编辑器模块过滤，内核不读它做执行判断。
 
-```
-atom       输入粒度       file / folder / line / none
-scope      分发策略       0 (共享) / 1 (独立)
-recurse    目录展开       true / false (仅 atom=file 时有效)
-```
+| 参数 | 说明 | 值 | 定义位置 |
+|------|------|-----|----------|
+| 输入来源 | CLI 决定输入粒度 | `--files`（路径）、`--lines`（文本行）、无（空输入） | CLI |
+| scope | 上下文分发策略 | `0`（shared，合并单任务）、`1`（per-unit，独立执行） | YAML |
+| recurse | 目录展开 | `true`（递归展开文件）、`false`（整体单元） | CLI |
 
 ```mermaid
 flowchart TD
@@ -101,53 +102,26 @@ flowchart TD
     STEPS --> OUT["产物目录: 重命名文件 / sidecar 文件 / 报告"]
 ```
 
-### 三参数速查
-
-| | atom | scope | recurse |
-|---|---|---|---|
-| **含义** | 输入原子粒度 | 上下文分发 | 目录展开 |
-| **值** | `file` `folder` `line` `none` | `0` `1` | `true` `false` |
-| **定义位置** | 工作流 YAML | 工作流 YAML | CLI 参数 |
-| **模块约束** | 须在 `MODULE_META.atom` 中 | 须匹配 `MODULE_META.scope` | 无 |
-
 ### 使用场景对照
 
-| 场景 | atom | scope | recurse | 典型任务 |
+| 场景 | 输入 | scope | recurse | 典型任务 |
 |---|---|---|---|---|
-| 文件格式转换、预处理、元数据注入、重命名 | `file` | `1` | `true` | 逐文件操作，保留目录结构 |
-| 文件夹内批量重命名、打包归档 | `folder` | `1` | — | 整个文件夹作为一个任务 |
-| API 调用、日志下载、直接产出文件 | `none` | `1` | — | 无输入，从零创建 |
-| 网络爬虫、逐行 URL 下载 | `line` | `1` | — | 每行文本作为独立任务 |
-| 混杂文件分类、跨文件统计计数 | `file` | `0` | `true` | 全量合并后一次执行 |
-
-## 工作流 YAML
-
-```yaml
-meta:
-  name: My Workflow
-  description: 工作流描述
-  version: "1.0.0"
-atom: file              # file | folder | line | none
-recurse: true           # 仅 atom=file 时有效；true 展开目录
-steps:
-  - module: my-module   # 模块 slug
-    name: 步骤名称
-    params:
-      key: value
-```
-
-平台内置 6 个示例工作流，位于 `workflows/` 目录，可作为模板直接修改。
+| 文件格式转换、预处理、元数据注入、重命名 | `--files` | `1` | `true` | 逐文件操作，保留目录结构 |
+| 文件夹内批量重命名、打包归档 | `--files`（目录） | `1` | — | 整个文件夹作为一个任务 |
+| API 调用、日志下载、直接产出文件 | 无输入 | `1` | — | 无输入，从零创建 |
+| 网络爬虫、逐行 URL 下载 | `--lines` | `1` | — | 每行文本作为独立任务 |
+| 混杂文件分类、跨文件统计计数 | `--files` | `0` | `true` | 全量合并后一次执行 |
 
 ## CLI 参考
 
 ```
-用法: shell-worker WORKFLOW [选项]
+用法: shell-worker [WORKFLOW] [选项]
 
 输入:
   --files PATH ...        文件/文件夹路径
-  --recurse               递归展开文件夹
-  --lines TEXT            文本输入（每行一个任务）
-  --lines-file PATH       从文件读取文本（- 为 stdin）
+  --recurse               递归展开文件夹逐文件创建任务
+  --lines TEXT            文本输入（逐行创建任务）
+  --lines-file PATH       从文件读取文本（- 为 stdin 识别任务）
 
 执行:
   --output-dir DIR        产物目录 (默认 ./out)
@@ -165,38 +139,28 @@ steps:
 退出码: 0=成功 | 1=部分失败 | 2=取消 | 3=参数非法
 ```
 
-## 编写模块
+## 工作流 YAML 结构
 
-`modules/` 下每个 `.py` 文件为一个模块。须导出三要素：
-
-```python
-MODULE_META = {
-    "slug": "my-module",
-    "name": "My Module",
-    "core_version": "2.0.0",
-    "tags": ["demo"],
-    "atom": ["file"],
-    "description": "模块功能描述",
-}
-CONFIG_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "suffix": {"type": "str", "title": "后缀", "default": "_done"},
-    },
-}
-
-def run(ctx, cfg, runtime):
-    """ctx: PipelineContext    cfg: 已校验的步骤参数    runtime: PipelineRuntime"""
-    new_path = ctx.working_path.with_name(ctx.working_path.name + cfg["suffix"])
-    ctx.working_path.rename(new_path)
-    runtime.log("my-module", "success", f"已重命名: {new_path.name}")
-    return ctx.clone(working_path=new_path)
+```yaml
+meta:
+  name: My Workflow
+  description: 工作流描述
+  version: "2.0.0"
+atom: file              # file | folder | line | none（可选 GUI 元数据）
+scope: 1                # 0 | 1
+recurse: true           # 可选，目录输入递归展开为内部文件单元
+steps:
+  - module: my-module   # 模块 slug
+    name: 步骤名称
+    params:
+      key: value
 ```
 
-要点：
-- `MODULE_META.scope` 可选，默认 `1`。仅在需要强制共享模式时设 `"scope": 0`。
-- `run()` 返回 `PipelineContext`（替换上下文）、`None`（保留原上下文）或 `{"context": ctx}` dict。
-- 跨步骤共享数据写入 `ctx.shared`，下游步骤通过同名 key 读取。
-- 调用外部程序使用 `runtime.spawn(command)`，跨平台 PTY 自动适配。
+## 编写新模块 / 项目结构参考
 
-更多细节请阅读 `AGENTS.md`。
+`core/` 为项目内核实现，从 `main.py` 启动或被 `main_gui.pyw` 调用.
+`modules/` 下每个 `.py` 文件为一个模块，可配置为输入处理模块 or 文件处理模块。
+`workflows/` 为执行工作流的配置定义  `.yaml` ，配置此项目内核的工作模型以及模块调用顺序。
+`resources/` 为外部二进制程序目录，提供给模块调用，在子会话中工作。
+
+更多实现细节请阅读 `AGENTS.md`。

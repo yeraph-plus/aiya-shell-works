@@ -2,6 +2,7 @@
 
 > **面向对象**：AI 编码代理（opencode）、项目贡献者。
 > **定位**：自包含的架构参考。阅读本文档即可在不探索项目的前提下理解代码结构并开始修改。
+> **修改时**：本文档记录项目当前状态，而非历史变更。更新时直接按现状改动，不使用"已移除"、"不再"、"新版"等增量表述。
 
 ---
 
@@ -12,38 +13,38 @@
 | 项目名称 | Shell Worker Platform |
 | 版本 | `CORE_VERSION = "2.0.0"`（`core/__init__.py`） |
 | Python 要求 | 3.11+ |
-| 入口 | `main_cli.py`（命令行，无 PySide6）+ `main_gui.pyw`（可选桌面） |
+| 入口 | `main.py`（命令行，无 PySide6）+ `main_gui.pyw`（可选桌面） |
 | 运行时核心依赖 | PyYAML |
 | 可选 GUI 依赖 | PySide6 ≥ 6.9 |
 | 可选 Windows PTY | pywinpty ≥ 2.0 |
 | Linux/macOS PTY | stdlib `pty`（无第三方依赖） |
 | 测试 | pytest ≥ 8.0 |
 
-`core/` 与 GUI 完全解耦，**可在 Linux 无桌面服务器上以 CLI 模式运行**。`execute_workflow()` 纯函数可在无 GUI 环境下调用，模块通过 `run(ctx, cfg, runtime)` 接收 runtime 而非 GUI 句柄。
+`core/` 与 GUI 完全解耦，**兼容 Linux 无桌面服务器上以 CLI 模式运行**。`execute_workflow()` 纯函数可在无 GUI 环境下调用，模块通过 `run(ctx, cfg, runtime)` 接收 runtime 而非 GUI 句柄。
 
 ---
 
 ## 2. 系统设计
 
-### 2.1 输入参数
+### 2.1 输入参数：输入模式 × scope × recurse
 
-系统通过 atom × scope × recurse 三个维度定义输入如何被切分和分发。
+内核**根据实际输入自动推导执行形状**，不依赖 YAML 声明的硬约束。CLI 按 `--files` 优先、`--lines` 次之、皆空即"无输入"三层优先级识别输入模式。
 
-#### atom — 原子粒度
+#### 输入模式（内核内部，`InputPlan.kind`）
 
-> atom 决定"一个处理单元是什么"。
+`InputPlan.kind` 仅供 executor + `WorkingCopier` 用于构建单元，**不对外暴露为模块兼容性约束**。
 
-| atom | 含义 | 输入来源 | 每个单元 |
+| kind | 含义 | 输入来源 | 每个单元 |
 |---|---|---|---|
-| `file` | 文件原子 | `--files`（文件/文件夹） | 一个文件 |
-| `folder` | 文件夹原子 | `--files`（仅文件夹，recurse=false 时 file workflow 由 executor 派生） | 一个文件夹整体 |
-| `line` | 文本行原子 | `--lines` / `--lines-file` / stdin | 一行非空文本 |
-| `none` | 空原子 | 无输入 | 1 个空单元 |
+| `path` | 路径输入 | `--files`（文件/文件夹，可混合） | 一个文件 或 一个文件夹整体（取决 `recurse`） |
+| `line` | 文本行输入 | `--lines` / `--lines-file` / stdin | 一行非空文本 |
+| `none` | 无输入 | 无 | 1 个空单元（`working_path = output_dir`） |
 
-- `--recurse` 仅 atom=file 时有意义：
-  - `recurse=true` → 文件夹输入被递归展开为内部文件的单元，保留 `source_root` 以维持相对路径复制语义。
-  - `recurse=false` → 文件夹单元作为整体（folder 模式）。
-- `--files` 覆盖 `--lines`；两者都没提供时 atom=none（空单元）。
+- `--recurse=true` → 文件夹输入被递归展开为内部文件单元，保留 `source_root` 以维持相对路径复制语义。
+- `--recurse=false` → 文件夹保持整体单元；文件单元本身仍为单文件。混合文件/文件夹输入各自成单元。
+- `--files` 覆盖 `--lines`；两者都没提供时 kind=none（空单元）。
+
+> **YAML `atom` 字段为可选 GUI 元数据**。内核不读它做执行/兼容性判断；YAML 提供 `atom` 时仅用于：① GUI 选择运行期显示的输入面板（path/line/none），② GUI 编辑器按 `is_file_module` 过滤可用模块。省略 `atom` 等价于"内核按实际输入推导"。
 
 #### scope — 上下文分发
 
@@ -51,10 +52,12 @@
 
 | scope | 含义 | 单元构造 | ctx / EventBus 生命周期 |
 |---|---|---|---|
-| `1` (per-unit) | 每个输入 = 1 个独立任务 | 每个 file/folder/line 独立构造 ctx | 每 unit 独立 bus，独立 ctx.shared；下一个 unit 完全重置 |
+| `1` (per-unit) | 每个输入 = 1 个独立任务 | 每个 path/line 独立构造 ctx | 每 unit 独立 bus，独立 ctx.shared；下一个 unit 完全重置 |
 | `0` (shared) | 全部输入合并为 1 个任务 | 所有输入复制进 `output_dir` 形成合并树，`working_path = output_dir` | 单个 ctx，单个 bus，模块内部 rglob 合并树自行遍历 |
 
 scope 值 > 1 预留用于按批次截取 N 个输入为 1 任务（分片），当前视为 scope=1 执行。
+
+> **scope 不作为模块兼容性的硬约束**：executor 不用 `workflow.scope != module.scope` 拒绝模块。模块可在任何 scope 下运行，但 per-unit 模块若被放入 shared 工作流，`working_path` 将是合并树根目录，模块须用 `ctx.is_file` / `ctx.is_dir` 自我门控。
 
 ### 2.2 核心设计逻辑
 
@@ -72,6 +75,14 @@ scope 值 > 1 预留用于按批次截取 N 个输入为 1 任务（分片），
 
 - **scope=1 (per-unit)**：executor 遍历所有输入，为每个输入构造独立 `PipelineContext`，对每个 unit 依次执行全部 steps。不同 unit 之间 EventBus 完全隔离（通过 `runtime.replace_bus()`），ctx.shared 不跨 unit。
 - **scope=0 (shared)**：executor 将所有输入复制进输出目录形成合并树，构造唯一一个 `PipelineContext`（`working_path = output_dir`），执行全部 steps。模块通过 `rglob` 自行遍历合并树。
+
+#### 模块与内核解耦
+
+模块**不关心内核的调度逻辑**（单文件 / 一组文件 / scope 值），只处理每次 ctx 传入的数据并传出：
+- 模块用 `ctx.is_file` / `ctx.is_dir` 判定工作路径形态。
+- 行输入模块读 `ctx.shared.get("input_line")`。
+- 无输入模块直接从 `ctx.output_dir` 创造文件。
+- `MODULE_META.is_file_module`（布尔）区分"path 处理模块"与"非 path 模块"（line/none/报告型），**仅用于 GUI 编辑器的模块过滤**，内核不校验。
 
 #### 并发模型
 
@@ -92,9 +103,8 @@ scope 值 > 1 预留用于按批次截取 N 个输入为 1 任务（分片），
 shell-worker/
 ├── AGENTS.md                    # 本文件
 ├── README.md
-├── pyproject.toml              # 含 optional extras: gui / win / dev
-├── requirements.txt
-├── main_cli.py                 # argparse CLI 入口（无 PySide6）
+├── pyproject.toml              # 含 optional extras: gui / win / image / dev
+├── main.py                     # argparse CLI 入口（无 PySide6）
 ├── main_gui.pyw                # 可选 PySide6 GUI 入口
 │
 ├── core/                       # 内核（无 GUI 依赖）
@@ -108,29 +118,34 @@ shell-worker/
 │   ├── input_inspector.py      # GUI 前期路径校验（InputInspector，不展开目录）
 │   ├── files.py                # WorkingCopier + 单元构建（path/lines/none/shared）
 │   ├── config_schema.py        # 8 种参数类型校验
-│   ├── module_manager.py       # 模块扫描，校验 atom + scope（含 VALID_ATOMS、VALID_SCOPES）
-│   ├── workflow_loader.py      # YAML 加载/保存/校验（含 VALID_ATOMS、VALID_SCOPES）
+│   ├── module_manager.py       # 模块扫描，校验 is_file_module + scope（含 VALID_SCOPES）
+│   ├── workflow_loader.py      # YAML 加载/保存/校验（atom 可选 GUI 元数据；含 VALID_SCOPES）
 │   ├── executor.py             # PipelineExecutor，scope=0/1 分发 + per-unit bus 隔离 + 取消检查
-│   └── tools.py                # 公用模块助手（collect_file_targets 按 ctx.atom 路由）
+│   └── tools.py                # 公用模块助手（collect_file_targets 按 ctx.is_file/is_dir 路由）
 │
 ├── gui/                        # 可选桌面层（PySide6）
 │   ├── __init__.py
 │   ├── main_window.py
 │   ├── workflow_editor.py
-│   ├── workflow_editor_state.py
+│   ├── editor/
+│   │   ├── __init__.py
+│   │   ├── info_tab.py
+│   │   ├── state.py
+│   │   └── steps_tab.py
 │   └── widgets/
 │       ├── __init__.py
-│       ├── dynamic_form.py
 │       ├── drop_zone.py
+│       ├── dynamic_form.py
+│       ├── input_panel.py
 │       └── terminal_window.py
 │
-├── modules/                    # 示例模块
-│   ├── verify_create_text_file.py     # none: 创建文件
-│   ├── verify_rename_path.py          # file/folder: 重命名 + 写 ctx.shared["renames"]
-│   ├── verify_write_summary.py        # file/folder/none: 读 ctx.shared["renames"] 写摘要
-│   ├── cycle_counter.py               # file + scope=0: rglob 计数
-│   ├── verify_line_echo.py            # line: 读 ctx.shared["input_line"]
-│   └── verify_run_external_tool.py    # file: runtime.spawn (跨平台 PTY)
+├── modules/                    # 示例模块（MODULE_META.is_file_module 区分 path / non-path）
+│   ├── verify_create_text_file.py     # is_file_module=False: 无输入创建文件
+│   ├── verify_rename_path.py          # is_file_module=True: 重命名 + 写 ctx.shared["renames"]
+│   ├── verify_write_summary.py        # is_file_module=False: 读 ctx.shared["renames"] 写摘要
+│   ├── cycle_counter.py               # is_file_module=True + scope=0: rglob 计数
+│   ├── verify_line_echo.py            # is_file_module=False: 读 ctx.shared["input_line"]
+│   └── verify_run_external_tool.py    # is_file_module=True: runtime.spawn (跨平台 PTY)
 │
 ├── workflows/                  # 示例 YAML
 │   └── example-*.yaml
@@ -153,7 +168,7 @@ shell-worker/
 │   └── test_cli.py
 │
 └── scripts/
-    └── verify.py              # 端到端验收（subprocess 调 main_cli.py，跨平台）
+    └── verify.py              # 端到端验收（subprocess 调 main.py，跨平台）
 ```
 
 ---
@@ -163,7 +178,7 @@ shell-worker/
 ### 3.1 执行管线
 
 ```
-工作流 YAML ──→ WorkflowLoader.load() ──→ WorkflowDefinition (atom/scope/recurse)
+工作流 YAML ──→ WorkflowLoader.load() ──→ WorkflowDefinition (atom 可选/scope/recurse)
                        │
                        ▼
                 PipelineExecutor.execute(workflow, output_dir=..., InputPlan...)
@@ -171,8 +186,8 @@ shell-worker/
               ┌────────┴─────────┬────────────────────┐
               ▼                  ▼                    ▼
         _prepare_steps      _build_units          per-unit：
-        (校验 atom/scope    (path/line/none +    runtime.replace_bus()
-         都对得上模块)         shared 树合并)       listener 自动迁移
+        (校验 CONFIG_SCHEMA) (path/line/none +    runtime.replace_bus()
+                             shared 树合并)       listener 自动迁移
               │                                       │
               ▼                                       ▼
         PreparedStep[]                         ctx = WorkingCopier
@@ -212,7 +227,6 @@ shell-worker/
 | `original_input` | `Path \| None` | 原始输入路径（line/none 模式为 None） |
 | `working_path` | `Path` | 当前工作副本路径 |
 | `output_dir` | `Path` | 产物目录 |
-| `atom` | `Atom` (`Literal["file","folder","line","none"]`) | 当前单元原子粒度 |
 | `shared` | `dict[str, Any]` | 单 unit 内跨步骤共享数据 |
 | `extra_files` | `list[Path]` | 已追踪的额外产出文件 |
 | `source_root` | `Path \| None` | recurse=true 时保留相对路径的源根 |
@@ -220,7 +234,7 @@ shell-worker/
 | `is_dir` | `bool` | working_path 是否为目录（自动计算） |
 
 方法：
-- `clone(**changes)` — 浅拷贝 + 字段覆盖；传入 `events` 会抛 `TypeError`。
+- `clone(**changes)` — 浅拷贝 + 字段覆盖；仅在 `_VALID_CLONE_FIELDS` 内的字段可覆盖。
 - `track_extra_file(path)` — 追踪产物文件。
 
 ### 3.3 PipelineRuntime
@@ -272,14 +286,14 @@ LogSink 为 Protocol，可扩展新的 sink 实现。EventBus 在分发事件时
 @dataclass(frozen=True)
 class WorkflowDefinition:
     meta: WorkflowMeta
-    atom: str
     scope: int
-    recurse: bool = False
     steps: tuple[WorkflowStep, ...]
+    atom: str | None = None      # 可选 GUI 元数据，内核不读
+    recurse: bool = False
     source_path: Path | None = None
 ```
 
-**YAML 顶层字段**：`meta / atom / scope / recurse / steps`。
+**YAML 顶层字段**：`meta / scope / steps`（必填）、`atom / recurse`（可选）。`atom` 仅作 GUI 输入面板选择与编辑器模块过滤的元数据，内核按实际输入推导执行形状。
 
 ### 3.7 ModuleDefinition
 
@@ -289,21 +303,19 @@ class WorkflowDefinition:
 @dataclass(frozen=True, slots=True)
 class ModuleDefinition:
     slug: str
-    name: str
-    core_version: str
-    tags: tuple[str, ...]
-    atom: tuple[str, ...]
-    scope: int = 1
-    parent: str | None = None
-    description: str | None = None
     module_meta: dict
     config_schema: dict
     run: Callable
     path: Path
     module: types.ModuleType
+    core_version: str = "2.0.0"
+    tags: tuple[str, ...] = ()    # 当前仅作 GUI 提示，预留为筛选标记
+    is_file_module: bool = True   # 区分 path 处理模块 / 非 path 模块（仅 GUI 过滤用）
+    scope: int = 1                # GUI 提示用，内核不校验
+    parent: str | None = None
 ```
 
-`MODULE_META` 中 `atom: list[str]` 声明模块适配的原子粒度；`scope`（可选 int，默认 1）声明批处理模式，缺失或值非法时该模块被忽略。
+`MODULE_META` 中 `is_file_module`（布尔，必填）区分该模块是否为 path 处理模块（`True`）或非 path 模块（`False`，如 line/none/报告型）；`scope`（可选 int，默认 1）仅作 GUI 提示，内核不校验。
 
 ---
 
@@ -314,7 +326,7 @@ class ModuleDefinition:
 每个 `modules/*.py` 必须导出：
 
 ```python
-MODULE_META: dict = { "slug", "name", "core_version", "tags", "atom", "scope", ... }
+MODULE_META: dict = { "slug", "name", "core_version", "tags", "is_file_module", "scope", ... }
 CONFIG_SCHEMA: dict = { "type": "object", "properties": {...}, "required": [...] }
 
 def run(ctx, cfg, runtime):
@@ -330,8 +342,8 @@ MODULE_META = {
     "name": "My Module",          # str，必填
     "core_version": "2.0.0",      # str，必填
     "tags": ["foo", "bar"],       # list[str]，必填
-    "atom": ["file", "folder"],   # list[str]，必填，合法值见 §2.1
-    "scope": 1,                   # int，可选，默认 1，合法值 {0, 1}
+    "is_file_module": True,       # bool，必填；True=path 处理模块，False=line/none/报告型
+    "scope": 1,                   # int，可选，默认 1，合法值 {0, 1}，仅 GUI 提示
     "parent": "other-slug",       # str | None，可选，编辑器中插父模块之后
     "description": "...",         # str，可选
 }
@@ -375,7 +387,7 @@ def run(ctx, cfg, runtime):
     return None
 ```
 
-line atom 下，executor 自动把当前行注入 `ctx.shared["input_line"]`，模块直接读取。
+line 输入模式（`InputPlan.kind == "line"`）下，executor 自动把当前行注入 `ctx.shared["input_line"]`，模块直接读取。
 
 ### 4.5 调用外部程序
 
@@ -403,11 +415,11 @@ def run(ctx, cfg, runtime):
 
 | 模式 | 文件 | 要点 |
 |---|---|---|
-| atom=none | `verify_create_text_file.py` | 最小 run()、`atom=["none"]`、`track_extra_file` |
-| atom=file + per-unit | `verify_rename_path.py` | `clone(working_path=...)`、写 `ctx.shared["renames"]` |
+| 无输入 | `verify_create_text_file.py` | 最小 run()、`is_file_module=False`、`track_extra_file` |
+| path + per-unit | `verify_rename_path.py` | `clone(working_path=...)`、写 `ctx.shared["renames"]` |
 | 读跨步骤合约 | `verify_write_summary.py` | 读 `ctx.shared["renames"]`、多事件类型、`track_extra_file` |
-| atom=file + scope=0 | `cycle_counter.py` | rglob working_path 自行遍历 |
-| atom=line + per-unit | `verify_line_echo.py` | 读 `ctx.shared["input_line"]` |
+| path + scope=0 | `cycle_counter.py` | rglob working_path 自行遍历 |
+| line + per-unit | `verify_line_echo.py` | 读 `ctx.shared["input_line"]` |
 | 调用外部工具 | `verify_run_external_tool.py` | `runtime.spawn`；事件流；exit_code 决策 |
 
 ---
@@ -421,9 +433,9 @@ meta:
   slug: my-workflow          # 唯一标识
   name: My Workflow          # 显示名称
   description: ...          # 可选
-atom: file                   # file | folder | line | none
+atom: file                   # 可选 GUI 元数据：file | folder | line | none
 scope: 1                     # 0 | 1
-recurse: false               # 可选，仅 atom=file 时有效
+recurse: false               # 可选，目录输入递归展开
 steps:
   - module: my-module-slug
     params:
@@ -440,13 +452,13 @@ steps:
 | `meta.slug` | str | 是 | 工作流唯一标识 |
 | `meta.name` | str | 是 | 显示名称 |
 | `meta.description` | str | 否 | 描述 |
-| `atom` | str | 是 | 原子粒度，须匹配所有步骤模块的 MODULE_META.atom |
-| `scope` | int | 是 | 批处理模式，须匹配所有步骤模块的 MODULE_META.scope |
-| `recurse` | bool | 否 | 默认 false，仅 atom=file 时对目录输入递归展开 |
+| `atom` | str | 否 | 可选 GUI 元数据：file/folder/line/none。内核不读，仅用于 GUI 输入面板选择与编辑器模块过滤 |
+| `scope` | int | 是 | 批处理模式 0/1/N；内核用 scope 切分单元 |
+| `recurse` | bool | 否 | 默认 false，目录输入递归展开为内部文件单元 |
 | `steps[].module` | str | 是 | 模块 slug，须已注册 |
 | `steps[].params` | dict | 是 | 模块参数，须符合该模块 CONFIG_SCHEMA |
 
-步骤按数组顺序**严格依次执行**，无跳转、无循环、无条件。每个步骤的配置参数在 YAML 加载时即通过 CONFIG_SCHEMA 校验。
+步骤按数组顺序**严格依次执行**，无跳转、无循环、无条件。每个步骤的配置参数在 YAML 加载时即通过 CONFIG_SCHEMA 校验。内核**不**用 `atom`/`scope` 校验模块兼容性。
 
 ---
 
@@ -469,12 +481,12 @@ python scripts/verify.py                  # 端到端验收（6 个工作流）
 | 文件 | 覆盖 |
 |---|---|
 | `test_runtime.py` | EventBus 全 API + listener 异常隔离 + JSONL sink + Runtime 生命周期 + bus replace 时持久 listener 自动迁移 |
-| `test_executor.py` | atom × scope 矩阵；per-unit bus 隔离；shared 合并树；shared+direct 拒收；cancel 在 step 边界；返回值合约非法拒绝；shared 跨步骤但不跨 unit |
+| `test_executor.py` | per-unit bus 隔离；shared 合并树；shared+direct 拒收；cancel 在 step 边界；返回值合约非法拒绝；shared 跨步骤但不跨 unit |
 | `test_terminal.py` | spawn 事件流、session 注册、跨平台 mock_tool 调用 |
-| `test_input.py` | InputPlan 解析、files/lines 优先级、混合 file/dir 报错 |
+| `test_input.py` | InputPlan.kind 解析、files/lines 优先级、混合 file/dir 接受 |
 | `test_files.py` | WorkingCopier 全套；shared 合并树；direct + shared 拒绝；folder 单元 |
-| `test_module_manager.py` | atom/scope 校验；MODULE_META 缺字段；重复 slug；parent；rescan |
-| `test_workflow_loader.py` | 新 YAML 拒绝 mode/batch；校验 atom/scope/recurse；保存往返 |
+| `test_module_manager.py` | is_file_module/scope 校验；MODULE_META 缺字段；重复 slug；parent；rescan |
+| `test_workflow_loader.py` | YAML 拒绝旧字段 mode/batch；atom 可选；recurse 独立于 atom；保存往返 |
 | `test_config_schema.py` | 8 种参数类型校验 |
 | `test_cli.py` | argparse、退出码、`--list-*`、子进程运行示例、--lines 文本输入 |
 
@@ -484,9 +496,9 @@ python scripts/verify.py                  # 端到端验收（6 个工作流）
 
 | 需求 | 改哪里 |
 |---|---|
-| 新增 atom 类型 | `context.py:Atom`、`input.py`、`module_manager.py:VALID_ATOMS`、`workflow_loader.py:VALID_ATOMS`、`files.py` 加 prepare 方法 |
-| 新增 scope 类型 | `module_manager.py:VALID_SCOPES`、`input.py`、`workflow_loader.py:VALID_SCOPES`、`executor._build_units` 加分支 |
-| 新增参数类型 | `config_schema.py` 校验 + `gui/widgets/dynamic_form.py` 渲染 + `gui/workflow_editor_state.py:iter_schema_fields/_normalize_field_type` |
+| 新增输入模式 | `input.py:InputPlan.kind`、`files.py:units_from_plan/build_*_units` 加分支；`executor._build_units/_prepare_context` 路由 |
+| 新增 scope 类型 | `module_manager.py:VALID_SCOPES`、`workflow_loader.py:VALID_SCOPES`、`executor._build_units` 加分支 |
+| 新增参数类型 | `config_schema.py` 校验 + `gui/widgets/dynamic_form.py` 渲染 + `gui/editor/state.py:iter_schema_fields/_normalize_field_type` |
 | 新增模块 | `modules/<name>.py` 按第 4 节规范 |
 | 新增工作流 | `workflows/<name>.yaml` 按第 5 节规范 |
 | 改 GUI 输入 UI 推导 | `gui/main_window.py:_update_input_controls` |

@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui.workflow_editor_state import (
+from gui.editor.state import (
     SchemaField,
     coerce_field_value,
     iter_schema_fields,
