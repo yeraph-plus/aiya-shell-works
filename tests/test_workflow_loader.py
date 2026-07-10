@@ -35,6 +35,23 @@ def test_validate_valid_document_succeeds(loader: WorkflowLoader) -> None:
     assert wf.steps[0].module == "demo"
 
 
+def test_validate_atom_optional(loader: WorkflowLoader) -> None:
+    doc = {**VALID_DOC}
+    del doc["atom"]
+    result = loader.validate_document(doc)
+    assert result.is_valid, result.errors
+    assert result.workflow is not None
+    assert result.workflow.atom is None
+
+
+def test_validate_recurse_decoupled_from_atom(loader: WorkflowLoader) -> None:
+    # recurse no longer cross-validated against atom (kernel derives the
+    # execution shape from actual inputs). atom=line + recurse=true is valid.
+    doc = {**VALID_DOC, "atom": "line", "recurse": True}
+    result = loader.validate_document(doc)
+    assert result.is_valid, result.errors
+
+
 def test_validate_legacy_mode_rejected(loader: WorkflowLoader) -> None:
     doc = {"meta": {"name": "X"}, "mode": "file", "steps": []}
     result = loader.validate_document(doc)
@@ -78,12 +95,17 @@ def test_validate_invalid_scope_rejected(loader: WorkflowLoader) -> None:
     assert not loader.validate_document(doc).is_valid
 
 
-def test_validate_recurse_only_when_atom_file(loader: WorkflowLoader) -> None:
-    # atom=line cannot specify recurse=true
-    doc = {**VALID_DOC, "atom": "line", "recurse": True}
+def test_validate_negative_scope_rejected(loader: WorkflowLoader) -> None:
+    doc = {**VALID_DOC, "scope": -1}
+    assert not loader.validate_document(doc).is_valid
+
+
+def test_validate_large_scope_accepted(loader: WorkflowLoader) -> None:
+    doc = {**VALID_DOC, "scope": 999}
     result = loader.validate_document(doc)
-    assert not result.is_valid
-    assert any("recurse" in e for e in result.errors)
+    assert result.is_valid, result.errors
+    assert result.workflow is not None
+    assert result.workflow.scope == 999
 
 
 def test_validate_empty_steps_list_ok(loader: WorkflowLoader) -> None:
