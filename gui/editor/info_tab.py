@@ -110,9 +110,8 @@ class InfoTab(QWidget):
     # Draft binding
     # ------------------------------------------------------------------
 
-    def set_draft(self, draft: WorkflowDraft, *, is_new: bool) -> None:
+    def set_draft(self, draft: WorkflowDraft) -> None:
         self._draft = draft
-        self._is_new = is_new
         self.load_draft()
 
     def load_draft(self) -> None:

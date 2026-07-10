@@ -8,14 +8,22 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QTextEdit, QVBoxLayout, QWidget
+
+BATCH_INTERVAL_MS = 80
+MAX_VISIBLE_BLOCKS = 5000
 
 
 class LogViewer(QWidget):
-    """Display workflow execution logs."""
+    """Display workflow execution logs with batched rendering."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._pending: list[str] = []
+        self._batch_timer = QTimer(singleShot=True, interval=BATCH_INTERVAL_MS)
+        self._batch_timer.timeout.connect(self._flush_pending)
+        self._block_count = 0
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -58,7 +66,30 @@ class LogViewer(QWidget):
             f'<span style="color:{accent};{extra_style}">{escaped}</span>'
             f"</div>"
         )
-        self.log_output.append(html)
+        self._pending.append(html)
+        if not self._batch_timer.isActive():
+            self._batch_timer.start()
+
+    def _flush_pending(self) -> None:
+        if not self._pending:
+            return
+        combined = "".join(self._pending)
+        self._pending.clear()
+        self._block_count += 1
+        self.log_output.append(combined)
+        self._trim_if_needed()
         self.log_output.verticalScrollBar().setValue(
             self.log_output.verticalScrollBar().maximum()
         )
+
+    def _trim_if_needed(self) -> None:
+        if self._block_count <= MAX_VISIBLE_BLOCKS:
+            return
+        doc = self.log_output.document()
+        cursor = doc.find('<div style="margin:0;padding:1px 6px;white-space:pre-wrap;')
+        if not cursor.isNull():
+            cursor.movePosition(
+                cursor.MoveOperation.End, cursor.KeepAnchor
+            )
+            cursor.removeSelectedText()
+            self._block_count -= 1

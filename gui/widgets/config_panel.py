@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Signal
+from PySide6.QtCore import QSettings, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractButton,
     QButtonGroup,
@@ -30,9 +30,9 @@ from core import WorkflowDefinition, WorkflowSummary, WorkflowLoader
 class ConfigPanel(QWidget):
     """Panel for workflow execution configuration."""
 
-    workflow_changed = Signal(object)
+    workflow_changed = Signal(object)     # WorkflowDefinition | None
     refresh_requested = Signal()
-    edit_requested = Signal(object)
+    edit_requested = Signal(object)       # WorkflowDefinition | None
     output_dir_changed = Signal(str)
     log_save_changed = Signal(bool)
     execute_requested = Signal()
@@ -49,6 +49,9 @@ class ConfigPanel(QWidget):
         self._settings = QSettings("ShellWorker", "ShellWorker")
         self._current_workflow: WorkflowDefinition | None = None
         self._summaries: list[WorkflowSummary] = []
+        self._pending_output_dir: str = ""
+        self._settings_timer = QTimer(singleShot=True, interval=300)
+        self._settings_timer.timeout.connect(self._flush_settings)
 
         self._build_ui()
         self._restore_settings()
@@ -294,8 +297,12 @@ class ConfigPanel(QWidget):
             self._settings.setValue("output_dir", path)
 
     def _on_output_dir_changed(self, text: str) -> None:
-        self._settings.setValue("output_dir", text)
+        self._pending_output_dir = text
+        self._settings_timer.start()
         self.output_dir_changed.emit(text)
+
+    def _flush_settings(self) -> None:
+        self._settings.setValue("output_dir", self._pending_output_dir)
 
     def _on_log_save_changed(self, state: int) -> None:
         enabled = state == 2

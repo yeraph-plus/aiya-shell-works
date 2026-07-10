@@ -32,7 +32,7 @@ from gui.editor.state import (
 class DynamicParameterForm(QWidget):
     """Render editable parameter widgets from a module config schema."""
 
-    values_changed = Signal(dict)
+    values_changed = Signal(dict)  # dict[str, Any]
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)

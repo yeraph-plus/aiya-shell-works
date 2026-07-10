@@ -41,6 +41,9 @@ CONFIG_SCHEMA = {
     },
 }
 
+def _parse_extensions(raw: str) -> set[str]:
+    return {e.strip().lower() for e in raw.split() if e.strip()}
+
 
 _IMAGE_EXTENSIONS = _parse_extensions("jpg jpeg png gif bmp webp")
 _VIDEO_EXTENSIONS = _parse_extensions("mp4 mov mkv wmv flv webm avi")
@@ -146,11 +149,6 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
     )
 
     return ctx
-
-
-def _parse_extensions(raw: str) -> set[str]:
-    return {e.strip().lower() for e in raw.split() if e.strip()}
-
 
 def _unique_path(target: Path) -> Path:
     if not target.exists():

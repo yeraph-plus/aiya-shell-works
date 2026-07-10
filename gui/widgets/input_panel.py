@@ -48,7 +48,7 @@ _SOLID_BORDER_STYLE = (
 class _DropFrame(QFrame):
     """QFrame hosting the input list with drag-and-drop support."""
 
-    paths_dropped = Signal(list)
+    paths_dropped = Signal(list)  # list[str]
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -271,7 +271,6 @@ class InputPanel(QWidget):
         """Clear all input."""
         self.input_list.clear()
         self.text_editor.clear()
-        self.paths_changed.emit()
 
     def set_unit_status(self, row: int, status: str) -> None:
         """Update the status badge for a specific input unit."""

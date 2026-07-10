@@ -88,7 +88,8 @@ class WorkflowEditor(QMainWindow):
         self.steps_tab.dirty_changed.connect(lambda: self._set_dirty(True))
 
     def _load_draft(self) -> None:
-        self.info_tab.set_draft(self.draft, is_new=self._is_new)
+        self.info_tab.set_draft(self.draft)
+        self.info_tab.set_edit_mode(self._is_new)
         self.steps_tab.set_draft(self.draft)
         self._set_dirty(False)
 
@@ -125,9 +126,7 @@ class WorkflowEditor(QMainWindow):
 
     def save_workflow_as(self) -> Path | None:
         self.info_tab.sync_to_draft()
-        default_name = self.workflow_loader._default_filename(  # noqa: SLF001
-            self.draft.name or "workflow"
-        )
+        default_name = self.workflow_loader.default_filename(self.draft.name or "workflow")
         selected_path, _ = QFileDialog.getSaveFileName(
             self,
             "另存为",

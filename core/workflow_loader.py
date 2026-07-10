@@ -199,7 +199,7 @@ class WorkflowLoader:
         result = self.validate_document(workflow)
         if not result.is_valid or result.workflow is None:
             raise WorkflowValidationError(list(result.errors))
-        target_name = name or self._default_filename(result.workflow.meta.name)
+        target_name = name or self.default_filename(result.workflow.meta.name)
         target = self._resolve_path(target_name, create_parent=True)
         serialized = result.workflow.to_dict()
         with target.open("w", encoding="utf-8", newline="\n") as fh:
@@ -339,7 +339,7 @@ class WorkflowLoader:
         return candidate
 
     @staticmethod
-    def _default_filename(name: str) -> str:
+    def default_filename(name: str) -> str:
         slug = "".join(c.lower() if c.isalnum() else "-" for c in name.strip())
         cleaned = "-".join(part for part in slug.split("-") if part)
         return f"{cleaned or 'workflow'}.yaml"

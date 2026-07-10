@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
     QDialog,
@@ -23,7 +23,7 @@ class TerminalWindow(QDialog):
     """Non-modal dialog showing real-time PTY output."""
 
     output_received = Signal(str)
-    session_finished = Signal(object)
+    session_finished = Signal(int)
 
     def __init__(
         self,
@@ -64,11 +64,14 @@ class TerminalWindow(QDialog):
 
     def closeEvent(self, event) -> None:
         self._dismissed = True
+        QTimer.singleShot(0, self._terminate_session)
+        super().closeEvent(event)
+
+    def _terminate_session(self) -> None:
         if self._runtime is not None:
             session = get_session(self._runtime, self._session_id)
             if session is not None and session.exit_code is None:
                 session.terminate()
-        super().closeEvent(event)
 
     def append_output(self, text: str) -> None:
         """Thread-safe: emit signal so text lands on the GUI thread."""
