@@ -57,6 +57,110 @@ class PreparedStep:
     params: dict[str, Any]
 
 
+# ---------------------------------------------------------------------------
+# Module-level step/unit helpers (shared by PipelineExecutor and scheduler)
+# ---------------------------------------------------------------------------
+
+
+def prepare_steps(
+    workflow: WorkflowDefinition,
+    module_manager: ModuleManager,
+) -> list[PreparedStep]:
+    """Validate step params and build ``PreparedStep`` list."""
+    modules = module_manager.get_modules()
+    prepared: list[PreparedStep] = []
+    for idx, step in enumerate(workflow.steps, start=1):
+        definition = modules.get(step.module)
+        if definition is None:
+            raise PipelineExecutionError(f"module not found: {step.module}")
+        try:
+            params = normalize_config_params(definition.config_schema, step.params)
+        except ConfigValidationError as exc:
+            raise PipelineExecutionError(
+                f"step {idx} ({step.module}) param validation failed: {'; '.join(exc.errors)}"
+            ) from exc
+        except ConfigSchemaValidationError as exc:
+            raise PipelineExecutionError(
+                f"module {step.module} CONFIG_SCHEMA invalid: {'; '.join(exc.errors)}"
+            ) from exc
+        prepared.append(
+            PreparedStep(
+                index=idx,
+                name=step.name or step.module,
+                module_slug=step.module,
+                module_definition=definition,
+                params=params,
+            )
+        )
+    return prepared
+
+
+def build_units(
+    workflow: WorkflowDefinition,
+    plan: InputPlan,
+) -> list[dict[str, Any]]:
+    """Build unit dicts from a plan."""
+    if workflow.scope == 0:
+        if plan.kind == "none":
+            return [{"path": None, "source_root": None}]
+        if plan.kind == "line":
+            return [{"lines": list(plan.lines)}]
+        return [{"__shared_paths__": list(plan.files), "recurse": plan.recurse, "source_root": None}]
+    if workflow.scope == 1:
+        return units_from_plan(plan)
+    if plan.kind == "line":
+        return _build_line_batches(list(plan.lines), workflow.scope)
+    if plan.kind == "none":
+        return [{"path": None, "source_root": None}]
+    return _build_path_batches(units_from_plan(plan), workflow.scope)
+
+
+def prepare_context(
+    workflow: WorkflowDefinition,
+    plan: InputPlan,
+    copier: WorkingCopier,
+    unit: dict[str, Any],
+    *,
+    shared: Mapping[str, Any] | None,
+) -> PipelineContext:
+    """Build a ``PipelineContext`` for a unit."""
+    if "__shared_paths__" in unit:
+        return copier.prepare_shared_path_unit(
+            list(unit["__shared_paths__"]),
+            recurse=unit.get("recurse", plan.recurse),
+            shared=shared,
+        )
+    if "__batched_paths__" in unit:
+        return copier.prepare_batched_path_unit(
+            list(unit["__batched_paths__"]),
+            batch_index=int(unit.get("batch_index", 1)),
+            shared=shared,
+        )
+    if plan.kind == "line" or unit.get("line") is not None or unit.get("lines") is not None:
+        return copier.prepare_line(unit, shared=shared)
+    if plan.kind == "none" or unit.get("path") is None:
+        return copier.prepare_none(shared=shared)
+    return copier.prepare_path_unit(unit, shared=shared)
+
+
+def resolve_step_result(
+    *,
+    step_name: str,
+    result: Any,
+    fallback: PipelineContext,
+) -> PipelineContext:
+    """Resolve a module's return value to a ``PipelineContext``."""
+    if result is None:
+        return fallback
+    if isinstance(result, PipelineContext):
+        return result
+    if isinstance(result, Mapping) and isinstance(result.get("context"), PipelineContext):
+        return result["context"]
+    raise PipelineExecutionError(
+        f"step {step_name} returned invalid value: must be PipelineContext, None, or dict with context key"
+    )
+
+
 class PipelineExecutor:
     """Execute a workflow definition; one instance, one execution."""
 
@@ -204,32 +308,7 @@ class PipelineExecutor:
         return summary
 
     def _prepare_steps(self, workflow: WorkflowDefinition) -> list[PreparedStep]:
-        modules = self.module_manager.get_modules()
-        prepared: list[PreparedStep] = []
-        for idx, step in enumerate(workflow.steps, start=1):
-            definition = modules.get(step.module)
-            if definition is None:
-                raise PipelineExecutionError(f"module not found: {step.module}")
-            try:
-                params = normalize_config_params(definition.config_schema, step.params)
-            except ConfigValidationError as exc:
-                raise PipelineExecutionError(
-                    f"step {idx} ({step.module}) param validation failed: {'; '.join(exc.errors)}"
-                ) from exc
-            except ConfigSchemaValidationError as exc:
-                raise PipelineExecutionError(
-                    f"module {step.module} CONFIG_SCHEMA invalid: {'; '.join(exc.errors)}"
-                ) from exc
-            prepared.append(
-                PreparedStep(
-                    index=idx,
-                    name=step.name or step.module,
-                    module_slug=step.module,
-                    module_definition=definition,
-                    params=params,
-                )
-            )
-        return prepared
+        return prepare_steps(workflow, self.module_manager)
 
     # ------------------------------------------------------------------
     # Unit construction
@@ -242,19 +321,7 @@ class PipelineExecutor:
         copier: WorkingCopier,
         shared: Mapping[str, Any] | None,
     ) -> list[dict[str, Any]]:
-        if workflow.scope == 0:
-            if plan.kind == "none":
-                return [{"path": None, "source_root": None}]
-            if plan.kind == "line":
-                return [{"lines": list(plan.lines)}]
-            return [{"__shared_paths__": list(plan.files), "recurse": plan.recurse, "source_root": None}]
-        if workflow.scope == 1:
-            return units_from_plan(plan)
-        if plan.kind == "line":
-            return _build_line_batches(list(plan.lines), workflow.scope)
-        if plan.kind == "none":
-            return [{"path": None, "source_root": None}]
-        return _build_path_batches(units_from_plan(plan), workflow.scope)
+        return build_units(workflow, plan)
 
     def _prepare_context(
         self,
@@ -265,23 +332,7 @@ class PipelineExecutor:
         *,
         shared: Mapping[str, Any] | None,
     ) -> PipelineContext:
-        if "__shared_paths__" in unit:
-            return copier.prepare_shared_path_unit(
-                list(unit["__shared_paths__"]),
-                recurse=unit.get("recurse", plan.recurse),
-                shared=shared,
-            )
-        if "__batched_paths__" in unit:
-            return copier.prepare_batched_path_unit(
-                list(unit["__batched_paths__"]),
-                batch_index=int(unit.get("batch_index", 1)),
-                shared=shared,
-            )
-        if plan.kind == "line" or unit.get("line") is not None or unit.get("lines") is not None:
-            return copier.prepare_line(unit, shared=shared)
-        if plan.kind == "none" or unit.get("path") is None:
-            return copier.prepare_none(shared=shared)
-        return copier.prepare_path_unit(unit, shared=shared)
+        return prepare_context(workflow, plan, copier, unit, shared=shared)
 
     # ------------------------------------------------------------------
     # Unit execution
@@ -323,15 +374,7 @@ class PipelineExecutor:
         return current
 
     def _resolve_step_result(self, *, step_name: str, result: Any, fallback: PipelineContext) -> PipelineContext:
-        if result is None:
-            return fallback
-        if isinstance(result, PipelineContext):
-            return result
-        if isinstance(result, Mapping) and isinstance(result.get("context"), PipelineContext):
-            return result["context"]
-        raise PipelineExecutionError(
-            f"step {step_name} returned invalid value: must be PipelineContext, None, or dict with context key"
-        )
+        return resolve_step_result(step_name=step_name, result=result, fallback=fallback)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -369,7 +412,7 @@ def execute_workflow(
     direct_mode: bool = False,
     modules_dir: str | Path = "modules",
     workflows_dir: str | Path | None = None,
-    log_file: str | Path | None = None,
+    enable_log: bool = False,
     progress_callback: ProgressCallback | None = None,
     cancel_requested: CancelCallback | None = None,
     event_listener: EventCallback | None = None,
@@ -381,7 +424,12 @@ def execute_workflow(
     No GUI imports; safe under multiprocessing.
     """
 
-    runtime = PipelineRuntime(log_file=log_file)
+    definition = _resolve_workflow_definition(workflow, workflows_dir=workflows_dir)
+    runtime = PipelineRuntime(
+        enable_log=enable_log,
+        output_dir=output_dir,
+        workflow_slug=definition.meta.slug,
+    )
     module_manager = ModuleManager(modules_dir)
     executor = PipelineExecutor(
         module_manager,
@@ -392,7 +440,7 @@ def execute_workflow(
     )
     try:
         return executor.execute(
-            _resolve_workflow_definition(workflow, workflows_dir=workflows_dir),
+            definition,
             output_dir=output_dir,
             files=files,
             recurse=recurse,

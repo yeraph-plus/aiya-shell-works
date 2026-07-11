@@ -178,11 +178,13 @@ def test_runtime_request_cancel_then_is_cancelled() -> None:
 
 
 def test_runtime_log_file_sink(tmp_path: Path) -> None:
-    p = tmp_path / "rt.log"
-    r = PipelineRuntime(log_file=p)
+    p = tmp_path / "rt_work"
+    p.mkdir()
+    r = PipelineRuntime(enable_log=True, output_dir=p, workflow_slug="test")
     r.log("a", "message", "x")
     r.close()
-    assert p.exists() and len(p.read_text(encoding="utf-8").splitlines()) >= 1
+    logs = list(p.glob("*.jsonl"))
+    assert logs and len(logs[0].read_text(encoding="utf-8").splitlines()) >= 1
 
 
 def test_runtime_sessions_registry_starts_empty() -> None:

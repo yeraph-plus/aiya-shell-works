@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QRadioButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -37,6 +38,7 @@ class ConfigPanel(QWidget):
     log_save_changed = Signal(bool)
     execute_requested = Signal()
     stop_requested = Signal()
+    watch_state_changed = Signal(bool)
 
     def __init__(
         self,
@@ -115,6 +117,46 @@ class ConfigPanel(QWidget):
         row_4.addWidget(self.output_dir_button)
         layout.addLayout(row_4)
 
+        row_watch_toggle = QHBoxLayout()
+        self.watch_checkbox = QCheckBox("启用文件监听")
+        self.watch_checkbox.setToolTip("开启后监控指定目录的文件变化，自动重新执行。\n输入区将切换为无输入模式。")
+        row_watch_toggle.addWidget(self.watch_checkbox)
+        row_watch_toggle.addStretch(1)
+        layout.addLayout(row_watch_toggle)
+
+        self._watch_dir_container = QWidget()
+        watch_dir_layout = QHBoxLayout(self._watch_dir_container)
+        watch_dir_layout.setContentsMargins(0, 0, 0, 0)
+        watch_dir_label = QLabel("    监听目录 ")
+        self.watch_dir_input = QLineEdit()
+        self.watch_dir_input.setPlaceholderText("选择要监听的目录路径")
+        self.watch_dir_button = QPushButton("浏览")
+        watch_dir_layout.addWidget(watch_dir_label)
+        watch_dir_layout.addWidget(self.watch_dir_input, stretch=1)
+        watch_dir_layout.addWidget(self.watch_dir_button)
+        self._watch_dir_container.hide()
+        layout.addWidget(self._watch_dir_container)
+
+        row_concurrency = QHBoxLayout()
+        concurrency_label = QLabel("并发数 ")
+        self.concurrency_spinbox = QSpinBox()
+        self.concurrency_spinbox.setRange(1, 99)
+        self.concurrency_spinbox.setValue(1)
+        self.concurrency_spinbox.setToolTip("并行 worker 数，1 为串行执行")
+        row_concurrency.addWidget(concurrency_label)
+        row_concurrency.addWidget(self.concurrency_spinbox)
+        row_concurrency.addStretch(1)
+        layout.addLayout(row_concurrency)
+
+        row_cron = QHBoxLayout()
+        cron_label = QLabel("定时(Cron) ")
+        self.cron_input = QLineEdit()
+        self.cron_input.setPlaceholderText("可选，如 */5 * * * *")
+        self.cron_input.setToolTip("标准 5 字段 cron 表达式，留空表示不启用定时执行")
+        row_cron.addWidget(cron_label)
+        row_cron.addWidget(self.cron_input, stretch=1)
+        layout.addLayout(row_cron)
+
         row_5 = QHBoxLayout()
         self.log_save_checkbox = QCheckBox("保存执行日志")
         self.log_save_checkbox.setToolTip("勾选后，每次执行会自动保存日志到产物目录")
@@ -142,6 +184,14 @@ class ConfigPanel(QWidget):
         self.log_save_checkbox.stateChanged.connect(self._on_log_save_changed)
         self.execute_button.clicked.connect(self.execute_requested.emit)
         self.stop_button.clicked.connect(self.stop_requested.emit)
+        self.watch_checkbox.stateChanged.connect(self._on_watch_state_changed)
+        self.watch_dir_button.clicked.connect(self._choose_watch_dir)
+        self.concurrency_spinbox.valueChanged.connect(
+            lambda v: self._settings.setValue("concurrency", v)
+        )
+        self.cron_input.textChanged.connect(
+            lambda t: self._settings.setValue("cron", t)
+        )
 
     def _restore_settings(self) -> None:
         saved_dir = self._settings.value("output_dir", "")
@@ -155,6 +205,21 @@ class ConfigPanel(QWidget):
         if direct_mode:
             self.mode_direct_radio.setChecked(True)
             self._direct_warning_label.setVisible(True)
+
+        watch_enabled = self._settings.value("watch_enabled", False, type=bool)
+        self.watch_checkbox.setChecked(watch_enabled)
+        self._watch_dir_container.setVisible(watch_enabled)
+
+        saved_watch_dir = self._settings.value("watch_dir", "")
+        if saved_watch_dir:
+            self.watch_dir_input.setText(saved_watch_dir)
+
+        concurrency = self._settings.value("concurrency", 1, type=int)
+        self.concurrency_spinbox.setValue(max(1, concurrency))
+
+        saved_cron = self._settings.value("cron", "")
+        if saved_cron:
+            self.cron_input.setText(saved_cron)
 
     def load_workflows(self, selected_path: Path | None = None) -> None:
         """Load workflows and populate the combo box."""
@@ -309,6 +374,19 @@ class ConfigPanel(QWidget):
         self._settings.setValue("log_save_enabled", enabled)
         self.log_save_changed.emit(enabled)
 
+    def _on_watch_state_changed(self, state: int) -> None:
+        enabled = state == 2
+        self._watch_dir_container.setVisible(enabled)
+        self._settings.setValue("watch_enabled", enabled)
+        self.watch_state_changed.emit(enabled)
+
+    def _choose_watch_dir(self) -> None:
+        selected = QFileDialog.getExistingDirectory(self, "选择监听目录")
+        if selected:
+            path = str(Path(selected).resolve())
+            self.watch_dir_input.setText(path)
+            self._settings.setValue("watch_dir", path)
+
     def get_current_workflow(self) -> WorkflowDefinition | None:
         """Get the currently selected workflow."""
         return self._current_workflow
@@ -325,6 +403,22 @@ class ConfigPanel(QWidget):
         """Check if log saving is enabled."""
         return self.log_save_checkbox.isChecked()
 
+    def is_watch_enabled(self) -> bool:
+        """Check if file watching is enabled."""
+        return self.watch_checkbox.isChecked()
+
+    def get_watch_dir(self) -> str:
+        """Get the watch directory path."""
+        return self.watch_dir_input.text().strip()
+
+    def get_concurrency(self) -> int:
+        """Get the concurrency value."""
+        return self.concurrency_spinbox.value()
+
+    def get_cron(self) -> str:
+        """Get the cron expression."""
+        return self.cron_input.text().strip()
+
     def set_running(self, running: bool) -> None:
         """Enable/disable controls based on execution state."""
         self.workflow_combo.setEnabled(not running)
@@ -335,6 +429,11 @@ class ConfigPanel(QWidget):
         self.mode_copy_radio.setEnabled(not running)
         self.mode_direct_radio.setEnabled(not running)
         self.log_save_checkbox.setEnabled(not running)
+        self.watch_checkbox.setEnabled(not running)
+        self.watch_dir_input.setEnabled(not running)
+        self.watch_dir_button.setEnabled(not running)
+        self.concurrency_spinbox.setEnabled(not running)
+        self.cron_input.setEnabled(not running)
         self.execute_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
 

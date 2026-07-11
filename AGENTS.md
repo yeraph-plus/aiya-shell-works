@@ -14,7 +14,7 @@
 | 版本 | `CORE_VERSION = "2.0.0"`（`core/__init__.py`） |
 | Python 要求 | 3.11+ |
 | 入口 | `main.py`（命令行，无 PySide6）+ `main_gui.pyw`（可选桌面） |
-| 运行时核心依赖 | PyYAML |
+| 运行时核心依赖 | PyYAML, watchdog ≥ 6.0, croniter ≥ 6.0 |
 | 可选 GUI 依赖 | PySide6 ≥ 6.9 |
 | 可选 Windows PTY | pywinpty ≥ 2.0 |
 | Linux/macOS PTY | stdlib `pty`（无第三方依赖） |
@@ -121,6 +121,7 @@ shell-worker/
 │   ├── module_manager.py       # 模块扫描，校验 is_file_module + scope（含 VALID_SCOPES）
 │   ├── workflow_loader.py      # YAML 加载/保存/校验（atom 可选 GUI 元数据；含 VALID_SCOPES）
 │   ├── executor.py             # PipelineExecutor，scope=0/1 分发 + per-unit bus 隔离 + 取消检查
+│   ├── scheduler.py            # WorkflowScheduler：并发/监听/定时调度壳
 │   └── tools.py                # 公用模块助手（collect_file_targets 按 ctx.is_file/is_dir 路由）
 │
 ├── gui/                        # 可选桌面层（PySide6）
@@ -165,6 +166,7 @@ shell-worker/
 │   ├── test_module_manager.py
 │   ├── test_workflow_loader.py
 │   ├── test_config_schema.py
+│   ├── test_scheduler.py
 │   └── test_cli.py
 │
 └── scripts/
@@ -273,7 +275,7 @@ shell-worker/
 LogSink(Protocol)
 ├── NullSink       (默认 no-op)
 ├── InMemorySink   (测试用)
-└── JSONLFileSink  (CLI --log-file 持久化 / 断点续传)
+└── JSONLFileSink  (CLI --log / GUI 日志保存开关，自动写入 {output_dir}/{timestamp}_{slug}.jsonl)
 ```
 
 LogSink 为 Protocol，可扩展新的 sink 实现。EventBus 在分发事件时同时写入当前绑定的 sink。
@@ -316,6 +318,26 @@ class ModuleDefinition:
 ```
 
 `MODULE_META` 中 `is_file_module`（布尔，必填）区分该模块是否为 path 处理模块（`True`）或非 path 模块（`False`，如 line/none/报告型）；`scope`（可选 int，默认 1）仅作 GUI 提示，内核不校验。
+
+### 3.8 WorkflowScheduler
+
+**`core/scheduler.py`** — 调度壳，在 `PipelineExecutor` 之上叠加三个正交能力：
+
+| 参数 | CLI flag | 含义 |
+|------|----------|------|
+| `concurrency` | `--concurrency N` / `-j N` | 并发 worker 数，1=串行（默认） |
+| `watch` | `--watch` | 启用文件监听模式（仅 path 输入），通过 watchdog 检测文件变更并触发重执行 |
+| `cron` | `--cron "*/5 * * * *"` | 标准 5 字段 cron 表达式，通过 croniter 驱动定时循环执行 |
+
+三者可任意组合。当三个参数均为默认值时，调度器回退到直接的 `PipelineExecutor` 路径（零开销）。
+
+**并发模型**：`scope=1` 时，主线程预构造所有 unit 上下文，之后通过 `ThreadPoolExecutor` 分发到独立线程执行。每个线程创建独立 `PipelineRuntime`，事件总线不串扰。`scope=0` 仅有一个 unit，不启用并发。
+
+**监听模型**：`_run_watch_loop()` 首次执行后启动 `watchdog.Observer` 监听输入路径所在目录。变更事件经防抖（0.5s）后触发全量重执行。`recurse` 参数控制是否递归监听子目录。`plan.kind != "path"` 时忽略监听标记，仅执行一次。
+
+**定时模型**：`_run_cron_loop()` 使用 `croniter.croniter` 计算下次触发时间，`sleep` 等待后执行。
+
+**日志路径**：调度器内部创建 `PipelineRuntime` 时若 `enable_log=True`，日志自动写入 `{output_dir}/{yyyyMMdd_HHmmss}_{slug}.jsonl`。并发模式下 worker 日志加 `_w{idx:04d}` 后缀区分。
 
 ---
 

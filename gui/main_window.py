@@ -26,6 +26,8 @@ class MainWindow(QMainWindow):
         self.project_dir = Path(project_dir).resolve()
         self.workflows_dir = self.project_dir / "workflows"
         self.modules_dir = self.project_dir / "modules"
+        self._last_workflow_atom: str = "none"
+        self._last_workflow_recurse: bool = False
 
         self.setWindowTitle("Shell Worker Platform")
         self.resize(1200, 800)
@@ -74,6 +76,7 @@ class MainWindow(QMainWindow):
         self._controller.status_message.connect(self.statusBar().showMessage)
         self._controller.execution_state_changed.connect(self._on_execution_state_changed)
         self._controller.log_message.connect(self._handle_error_log)
+        self._controller.validation_failed.connect(self._on_validation_failed)
 
     def _handle_error_log(self, message: str) -> None:
         if message.startswith("[ERROR]"):
@@ -87,10 +90,11 @@ class MainWindow(QMainWindow):
         self.config_panel.log_save_changed.connect(self._on_log_save_changed)
         self.config_panel.execute_requested.connect(self._start_execution)
         self.config_panel.stop_requested.connect(self._controller.stop)
+        self.config_panel.watch_state_changed.connect(self._on_watch_state_changed)
 
         self.input_panel.paths_changed.connect(self._update_execute_button)
         self.input_panel.status_message.connect(self.statusBar().showMessage)
-        self.input_panel.warning.connect(self._show_warning)
+        self.input_panel.warning.connect(self._on_input_warning)
 
     def _reload_workflows(self) -> None:
         selected_summary = self.config_panel.get_selected_summary()
@@ -99,15 +103,28 @@ class MainWindow(QMainWindow):
 
     def _on_workflow_changed(self, workflow: WorkflowDefinition | None) -> None:
         if workflow is None:
+            self._last_workflow_atom = "none"
+            self._last_workflow_recurse = False
             self.input_panel.set_atom("none", False)
             self._update_execute_button()
             self.statusBar().showMessage("选择或新建工作流以开始执行")
             return
 
         atom = workflow.atom or "none"
-        self.input_panel.set_atom(atom, workflow.recurse)
+        self._last_workflow_atom = atom
+        self._last_workflow_recurse = workflow.recurse
+        if self.config_panel.is_watch_enabled():
+            self.input_panel.set_atom("none", False)
+        else:
+            self.input_panel.set_atom(atom, workflow.recurse)
         self._update_execute_button()
         self.statusBar().showMessage(f"已选择工作流: {workflow.meta.name}")
+
+    def _on_watch_state_changed(self, enabled: bool) -> None:
+        if enabled:
+            self.input_panel.set_atom("none", False)
+        else:
+            self.input_panel.set_atom(self._last_workflow_atom, self._last_workflow_recurse)
 
     def _on_output_dir_changed(self, text: str) -> None:
         self._update_execute_button()
@@ -143,6 +160,12 @@ class MainWindow(QMainWindow):
         if workflow is None:
             return False
 
+        if self.config_panel.is_watch_enabled():
+            output_dir = self.config_panel.get_output_dir()
+            if not output_dir and not self.config_panel.is_direct_mode():
+                return False
+            return bool(self.config_panel.get_watch_dir())
+
         atom = workflow.atom
         has_paths = self.input_panel.input_list.count() > 0
         has_text = bool(self.input_panel.text_editor.toPlainText().strip())
@@ -163,45 +186,10 @@ class MainWindow(QMainWindow):
         return False
 
     def _start_execution(self) -> None:
-        workflow = self.config_panel.get_current_workflow()
-
-        if workflow is None:
-            QMessageBox.warning(self, "无法执行", "请先选择一个有效工作流。")
-            return
-
-        output_dir = self._resolve_output_dir()
-        if not output_dir:
-            QMessageBox.warning(self, "无法执行", "请先选择产物目录。")
-            return
-
-        input_paths = self.input_panel.get_files()
-        input_text = self.input_panel.get_lines()
-        atom = workflow.atom
-
-        if atom in {"file", "folder"} and not input_paths:
-            QMessageBox.warning(self, "无法执行", "当前工作流需要至少一个路径输入。")
-            return
-        if atom == "line" and not input_text.strip():
-            QMessageBox.warning(self, "无法执行", "请输入至少一行文本任务。")
-            return
-        if atom is None and not input_paths and not input_text.strip():
-            QMessageBox.warning(self, "无法执行", "请至少提供一个路径输入或一行文本任务。")
-            return
-
         self._controller.start()
 
-    def _resolve_output_dir(self) -> str:
-        text = self.config_panel.get_output_dir().strip()
-        if text:
-            return str(Path(text).resolve())
-
-        if self.config_panel.is_direct_mode():
-            workflow = self.config_panel.get_current_workflow()
-            if workflow and workflow.atom in {None, "file", "folder"}:
-                inputs = self.input_panel.get_files()
-                if inputs:
-                    return str(Path(inputs[0]).parent)
-        return ""
-
-    def _show_warning(self, title: str, message: str) -> None:
+    def _on_validation_failed(self, title: str, message: str) -> None:
         QMessageBox.warning(self, title, message)
+
+    def _on_input_warning(self, title: str, message: str) -> None:
+        self.statusBar().showMessage(f"{title}: {message}", 8000)

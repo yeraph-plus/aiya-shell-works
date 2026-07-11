@@ -40,11 +40,18 @@ class PipelineRuntime:
         self,
         *,
         log_sink: LogSink | None = None,
-        log_file: str | Path | None = None,
+        enable_log: bool = False,
+        output_dir: str | Path | None = None,
+        workflow_slug: str = "",
     ) -> None:
         self._log_sink = log_sink
-        if log_file is not None and log_sink is None:
-            self._log_sink = JSONLFileSink(log_file)
+        if enable_log and log_sink is None and output_dir:
+            from datetime import datetime
+
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            slug_part = f"_{workflow_slug}" if workflow_slug else ""
+            path = Path(output_dir) / f"{ts}{slug_part}.jsonl"
+            self._log_sink = JSONLFileSink(path)
         self._sessions = TerminalSessionRegistry()
         self._cancel = False
         self._resuming = False

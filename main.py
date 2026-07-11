@@ -22,9 +22,8 @@ from pathlib import Path
 
 from core import (
     ModuleManager,
-    PipelineExecutor,
-    PipelineRuntime,
     WorkflowLoader,
+    WorkflowScheduler,
 )
 from core.exceptions import (
     PipelineCancelledError,
@@ -59,8 +58,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--modules-dir", default="modules", help="modules directory")
     p.add_argument("--workflows-dir", default="workflows", help="workflows directory")
 
+    # ---- scheduling ----
+    p.add_argument(
+        "--concurrency", "-j", type=int, default=1, metavar="N", help="parallel worker count (default 1, sequential)"
+    )
+    p.add_argument("--watch", action="store_true", default=False, help="watch input files for changes and re-execute")
+    p.add_argument("--cron", default=None, metavar="EXPR", help="cron expression for periodic execution, e.g. '*/5 * * * *'")
+
     # ---- logging ----
-    p.add_argument("--log-file", default=None, help="JSONL log sink path")
+    p.add_argument("--log", action="store_true", default=False, help="enable JSONL event log to output directory")
 
     # ---- introspection ----
     p.add_argument("--list-workflows", action="store_true", default=False, help="list workflows under workflows/")
@@ -95,20 +101,42 @@ def main(argv: Sequence[str] | None = None) -> int:
         if candidate.exists():
             workflow_arg = candidate
 
-    runtime = PipelineRuntime(log_file=args.log_file)
     try:
         module_manager = ModuleManager(modules_dir)
-        executor = PipelineExecutor(module_manager, runtime=runtime)
 
-        summary = executor.execute(
-            workflow_arg,
-            output_dir=output_dir,
-            files=args.files,
-            recurse=args.recurse,
-            lines_text=args.lines,
-            lines_file=args.lines_file,
-            direct_mode=args.direct,
-        )
+        use_scheduler = args.concurrency > 1 or args.watch or args.cron is not None
+        if use_scheduler:
+            scheduler = WorkflowScheduler(
+                module_manager,
+                concurrency=args.concurrency,
+                watch=args.watch,
+                cron=args.cron,
+            )
+            summary = scheduler.run(
+                workflow_arg,
+                output_dir=output_dir,
+                files=args.files,
+                recurse=args.recurse,
+                lines_text=args.lines,
+                lines_file=args.lines_file,
+                direct_mode=args.direct,
+                enable_log=args.log,
+            )
+        else:
+            from core.executor import execute_workflow as _exec_wf
+
+            summary = _exec_wf(
+                workflow_arg,
+                output_dir=output_dir,
+                files=args.files,
+                recurse=args.recurse,
+                lines_text=args.lines,
+                lines_file=args.lines_file,
+                direct_mode=args.direct,
+                modules_dir=modules_dir,
+                workflows_dir=workflows_dir,
+                enable_log=args.log,
+            )
     except (WorkflowValidationError, PipelineExecutionError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 3
@@ -119,8 +147,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         logging.exception("unhandled")
         print(f"error: {exc}", file=sys.stderr)
         return 4
-    finally:
-        runtime.close()
 
     if summary.get("cancelled"):
         return 2

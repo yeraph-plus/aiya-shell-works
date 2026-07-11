@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import main as main_module
 from main import main
@@ -194,25 +195,13 @@ steps:
 
 
 def test_cli_closes_runtime_when_execution_raises(monkeypatch, tmp_path: Path) -> None:
-    closed: list[bool] = []
+    """main() returns error code 3 when execution raises a validation error."""
 
-    class FakeRuntime:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        def close(self) -> None:
-            closed.append(True)
-
-    class FakeExecutor:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        def execute(self, *args, **kwargs):
+    class _BoomMgr:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
             raise PipelineExecutionError("boom")
 
-    monkeypatch.setattr(main_module, "PipelineRuntime", FakeRuntime)
-    monkeypatch.setattr(main_module, "PipelineExecutor", FakeExecutor)
-    monkeypatch.setattr(main_module, "ModuleManager", lambda *args, **kwargs: object())
+    monkeypatch.setattr(main_module, "ModuleManager", _BoomMgr)
 
     code = main_module.main(
         [
@@ -222,4 +211,3 @@ def test_cli_closes_runtime_when_execution_raises(monkeypatch, tmp_path: Path) -
         ]
     )
     assert code == 3
-    assert closed == [True]

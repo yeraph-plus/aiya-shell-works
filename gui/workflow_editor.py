@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -78,6 +78,15 @@ class WorkflowEditor(QMainWindow):
         button_row.addWidget(self.save_button)
         root_layout.addLayout(button_row)
 
+        self._bottom_warning_label = QLabel()
+        self._bottom_warning_label.setStyleSheet(
+            "background: #fdf2f2; color: #c0392b; padding: 6px 12px;"
+            "border-radius: 4px; font-size: 10pt;"
+        )
+        self._bottom_warning_label.setWordWrap(True)
+        self._bottom_warning_label.hide()
+        root_layout.addWidget(self._bottom_warning_label)
+
         self.setCentralWidget(central)
 
         self.save_button.clicked.connect(self.save_workflow)
@@ -144,8 +153,8 @@ class WorkflowEditor(QMainWindow):
             relative_target = target_path.resolve().relative_to(self.workflow_loader.workflows_dir)
             saved_path = self.workflow_loader.save(workflow, relative_target)
         except Exception as exc:  # pragma: no cover - UI feedback path
-            QMessageBox.critical(self, "保存失败", str(exc))
-            self.statusBar().showMessage("保存失败")
+            self._show_bottom_warning(f"保存失败: {exc}")
+            self.statusBar().showMessage("保存失败", 3000)
             return None
         self.draft.source_path = saved_path
         self._is_new = False
@@ -159,6 +168,16 @@ class WorkflowEditor(QMainWindow):
     # ------------------------------------------------------------
     # Dirty + close
     # ------------------------------------------------------------
+
+    def _show_bottom_warning(self, text: str, timeout_ms: int = 0) -> None:
+        self._bottom_warning_label.setText(text)
+        self._bottom_warning_label.show()
+        if timeout_ms > 0:
+            QTimer.singleShot(timeout_ms, self._bottom_warning_label.hide)
+
+    def _clear_bottom_warning(self) -> None:
+        self._bottom_warning_label.clear()
+        self._bottom_warning_label.hide()
 
     def _set_dirty(self, dirty: bool = True) -> None:
         self._dirty = dirty

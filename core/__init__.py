@@ -26,6 +26,7 @@ from .exceptions import (
     WorkflowValidationError,
 )
 from .executor import PipelineExecutor, PreparedStep, execute_workflow
+from .scheduler import WorkflowScheduler
 from .files import WorkingCopier, build_lines_units, build_path_units, make_unique_path, units_from_plan
 from .input import InputPlan, resolve_input
 from .input_inspector import InputInspector, ValidationResult
@@ -84,6 +85,7 @@ __all__ = [
     "ModuleManager",
     "PipelineExecutor",
     "execute_workflow",
+    "WorkflowScheduler",
     "PreparedStep",
     "PipelineCancelledError",
     "PipelineExecutionError",

@@ -6,7 +6,6 @@ and signal routing between high-level widgets.
 
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 from threading import Event
 from typing import Any
@@ -19,6 +18,7 @@ from core import (
     PipelineExecutor,
     PipelineRuntime,
     WorkflowDefinition,
+    WorkflowScheduler,
 )
 
 from .config_panel import ConfigPanel
@@ -46,6 +46,10 @@ class ExecutionWorker(QObject):
         direct_mode: bool,
         modules_dir: str,
         log_save: bool = False,
+        concurrency: int = 1,
+        watch: bool = False,
+        watch_dir: str = "",
+        cron: str = "",
     ) -> None:
         super().__init__()
         self.workflow = workflow
@@ -55,13 +59,20 @@ class ExecutionWorker(QObject):
         self.direct_mode = direct_mode
         self.modules_dir = modules_dir
         self.log_save = log_save
+        self.concurrency = concurrency
+        self.watch = watch
+        self.watch_dir = watch_dir
+        self.cron = cron
         self.runtime: PipelineRuntime | None = None
         self._cancel_event = Event()
+        self._scheduler: WorkflowScheduler | None = None
 
     def request_stop(self) -> None:
         """Ask the worker to stop at the next safe boundary."""
         self._cancel_event.set()
-        if self.runtime is not None:
+        if self._scheduler is not None:
+            self._scheduler.request_cancel()
+        elif self.runtime is not None:
             self.runtime.request_cancel()
 
     @Slot()
@@ -69,54 +80,84 @@ class ExecutionWorker(QObject):
         input_results: list[dict[str, Any]] = []
         total_inputs = 0
 
+        use_scheduler = self.concurrency > 1 or self.watch or bool(self.cron)
+        files = list(self.input_paths)
+        if self.watch and self.watch_dir:
+            files = [self.watch_dir]
+
         try:
-            log_file = None
-            if self.log_save and self.output_dir:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                workflow_name = self.workflow.meta.name.replace(" ", "_")
-                log_file = str(Path(self.output_dir) / f"{timestamp}_{workflow_name}.jsonl")
+            if use_scheduler:
+                self._scheduler = WorkflowScheduler(
+                    self._build_module_manager(),
+                    concurrency=self.concurrency,
+                    watch=self.watch,
+                    cron=self.cron or None,
+                )
+                if self.watch:
+                    self.log_message.emit(f"开始文件监听模式: {self.watch_dir}")
+                elif self.cron:
+                    self.log_message.emit(f"开始定时执行: {self.cron}")
+                elif self.concurrency > 1:
+                    self.log_message.emit(f"开始并发执行，worker 数: {self.concurrency}")
 
-            self.runtime = PipelineRuntime(log_file=log_file)
-            executor = PipelineExecutor(
-                module_manager=self._build_module_manager(),
-                runtime=self.runtime,
-                event_listener=self._on_executor_event,
-                progress_callback=self._forward_progress,
-                cancel_requested=self._cancel_event.is_set,
-            )
-
-            for index in range(len(self.input_paths)):
-                self.unit_status.emit(index, "processing")
-
-            atom = self.workflow.atom
-            if atom == "line":
-                self.log_message.emit("开始处理文本输入。")
-            elif atom == "none":
-                self.log_message.emit("开始执行无输入工作流。")
-            elif self.workflow.scope == 0:
-                self.log_message.emit(f"开始处理共享路径输入，共 {len(self.input_paths)} 个输入。")
-            elif self.input_paths:
-                self.log_message.emit(f"开始处理路径输入，共 {len(self.input_paths)} 个输入。")
+                summary = self._scheduler.run(
+                    self.workflow,
+                    output_dir=self.output_dir,
+                    files=files or None,
+                    recurse=self.workflow.recurse,
+                    lines_text=self.input_text if self.input_text.strip() else None,
+                    direct_mode=self.direct_mode,
+                    enable_log=self.log_save,
+                    event_listener=self._on_executor_event,
+                    progress_callback=self._forward_progress,
+                )
             else:
-                self.log_message.emit("开始执行自动输入工作流。")
+                self.runtime = PipelineRuntime(
+                    enable_log=self.log_save,
+                    output_dir=self.output_dir,
+                    workflow_slug=self.workflow.meta.slug if self.workflow.meta.slug else "",
+                )
+                executor = PipelineExecutor(
+                    module_manager=self._build_module_manager(),
+                    runtime=self.runtime,
+                    event_listener=self._on_executor_event,
+                    progress_callback=self._forward_progress,
+                    cancel_requested=self._cancel_event.is_set,
+                )
 
-            summary = executor.execute(
-                self.workflow,
-                output_dir=self.output_dir,
-                files=self.input_paths or None,
-                recurse=self.workflow.recurse,
-                lines_text=self.input_text if self.input_text.strip() else None,
-                direct_mode=self.direct_mode,
-            )
+                for index in range(len(self.input_paths)):
+                    self.unit_status.emit(index, "processing")
+
+                atom = self.workflow.atom
+                if atom == "line":
+                    self.log_message.emit("开始处理文本输入。")
+                elif atom == "none":
+                    self.log_message.emit("开始执行无输入工作流。")
+                elif self.workflow.scope == 0:
+                    self.log_message.emit(f"开始处理共享路径输入，共 {len(self.input_paths)} 个输入。")
+                elif self.input_paths:
+                    self.log_message.emit(f"开始处理路径输入，共 {len(self.input_paths)} 个输入。")
+                else:
+                    self.log_message.emit("开始执行自动输入工作流。")
+
+                summary = executor.execute(
+                    self.workflow,
+                    output_dir=self.output_dir,
+                    files=self.input_paths or None,
+                    recurse=self.workflow.recurse,
+                    lines_text=self.input_text if self.input_text.strip() else None,
+                    direct_mode=self.direct_mode,
+                )
+
             input_results = [
                 {
-                    "input": list(self.input_paths) if self.input_paths else None,
+                    "input": list(files) if files else None,
                     "summary": summary,
                 }
             ]
             cancelled = self._cancel_event.is_set() or summary.get("cancelled", False)
             final_status = "cancelled" if cancelled else "completed" if summary.get("success") else "failed"
-            for index in range(len(self.input_paths)):
+            for index in range(len(files)):
                 self.unit_status.emit(index, final_status)
 
             finished_inputs = int(summary.get("successful_units", 0)) + int(summary.get("failed_units", 0))
@@ -153,6 +194,7 @@ class ExecutionWorker(QObject):
             if self.runtime is not None:
                 self.runtime.close()
                 self.runtime = None
+            self._scheduler = None
 
     def _build_module_manager(self) -> ModuleManager:
         return ModuleManager(self.modules_dir)
@@ -187,6 +229,7 @@ class ExecutionController(QObject):
     log_message = Signal(str)
     status_message = Signal(str)
     execution_state_changed = Signal(bool)
+    validation_failed = Signal(str, str)
 
     def __init__(
         self,
@@ -212,21 +255,32 @@ class ExecutionController(QObject):
     def start(self) -> None:
         workflow = self._config.get_current_workflow()
         if workflow is None:
+            self.validation_failed.emit("无法执行", "请先选择一个有效工作流。")
             return
 
         output_dir = self._resolve_output_dir()
         if not output_dir:
+            self.validation_failed.emit("无法执行", "请先选择产物目录。")
             return
 
         input_paths = self._input.get_files()
         input_text = self._input.get_lines()
         atom = workflow.atom
+        watch_enabled = self._config.is_watch_enabled()
+        watch_dir = self._config.get_watch_dir() if watch_enabled else ""
 
-        if atom in {"file", "folder"} and not input_paths:
+        if watch_enabled:
+            if not watch_dir:
+                self.validation_failed.emit("无法执行", "请选择要监听的目录。")
+                return
+        elif atom in {"file", "folder"} and not input_paths:
+            self.validation_failed.emit("无法执行", "当前工作流需要至少一个路径输入。")
             return
-        if atom == "line" and not input_text.strip():
+        elif atom == "line" and not input_text.strip():
+            self.validation_failed.emit("无法执行", "请输入至少一行文本任务。")
             return
-        if atom is None and not input_paths and not input_text.strip():
+        elif atom is None and not input_paths and not input_text.strip():
+            self.validation_failed.emit("无法执行", "请至少提供一个路径输入或一行文本任务。")
             return
 
         self._log_viewer.append_message(
@@ -243,6 +297,10 @@ class ExecutionController(QObject):
             direct_mode=self._config.is_direct_mode(),
             modules_dir=self._modules_dir,
             log_save=self._config.is_log_save_enabled(),
+            concurrency=self._config.get_concurrency(),
+            watch=watch_enabled,
+            watch_dir=watch_dir,
+            cron=self._config.get_cron(),
         )
         thread = QThread(self)
         worker.moveToThread(thread)
