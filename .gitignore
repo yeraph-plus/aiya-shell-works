@@ -15,7 +15,8 @@ _internal/
 
 # Resources: track install scripts / mock_tool at root; ignore all downloaded binary subdirs
 resources/*/
-workflows/*/
+workflows/
+
 # Editor
 .vscode/
 .idea/
@@ -24,3 +25,6 @@ workflows/*/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# other
+TODO.md

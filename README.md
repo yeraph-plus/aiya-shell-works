@@ -1,4 +1,4 @@
-# Shell Worker Platform
+# AIYA Shell Worker Platform
 
 按**单向管道**模型设计的模块化批量任务工作流平台，通过 YAML 编排步骤，对文件或文本输入执行批量处理、自动化任务。CLI 驱动，可选桌面 GUI，跨平台。
 
@@ -24,7 +24,6 @@ flowchart LR
 pip install .                        # 内核 + CLI（仅 PyYAML）
 pip install ".[gui]"                 # + PySide6 桌面 GUI
 pip install ".[win]"                 # + pywinpty（Windows PTY）
-pip install ".[image]"               # + Pillow 图片处理
 ```
 
 Linux / macOS 上 CLI 零 GUI 依赖，PTY 由 stdlib 提供。
@@ -104,13 +103,13 @@ flowchart TD
 
 ### 使用场景对照
 
-| 场景 | 输入 | scope | recurse | 典型任务 |
-|---|---|---|---|---|
-| 文件格式转换、预处理、元数据注入、重命名 | `--files` | `1` | `true` | 逐文件操作，保留目录结构 |
-| 文件夹内批量重命名、打包归档 | `--files`（目录） | `1` | — | 整个文件夹作为一个任务 |
-| API 调用、日志下载、直接产出文件 | 无输入 | `1` | — | 无输入，从零创建 |
-| 网络爬虫、逐行 URL 下载 | `--lines` | `1` | — | 每行文本作为独立任务 |
-| 混杂文件分类、跨文件统计计数 | `--files` | `0` | `true` | 全量合并后一次执行 |
+| 典型任务 | 输入命令 | 分批约束 | 场景 |
+|---|---|---|---|
+| 逐文件操作，保留目录结构 | `--files [PATH] --recurse` | `scope: 1` | 文件格式转换、预处理、元数据注入、重命名 |
+| 全量合并后一次执行 | `--files [PATH] --recurse` | `scope: 0` | 混杂文件分类、跨文件统计计数 |
+| 整个文件夹作为一个任务 | `--files [PATH]` | `scope: 1` | 文件夹内批量重命名、打包归档 |
+| 按行输入文本作为独立任务 | `--lines` | `scope: 1` | 网络爬虫、逐行 URL 下载 |
+| 无输入，从零创建 | 无输入 | `scope: 1` | API 调用、日志下载、直接产出文件 |
 
 ## CLI 参考
 
@@ -119,18 +118,23 @@ flowchart TD
 
 输入:
   --files PATH ...        文件/文件夹路径
-  --recurse               递归展开文件夹逐文件创建任务
-  --lines TEXT            文本输入（逐行创建任务）
+  --recurse       递归开关，展开文件夹逐文件创建任务
+  --lines TEXT        文本输入（逐行创建任务）
   --lines-file PATH       从文件读取文本（- 为 stdin 识别任务）
 
 执行:
   --output-dir DIR        产物目录 (默认 ./out)
-  --direct                直接操作原始文件（跳过拷贝）
+  --direct        直接操作原始文件（跳过拷贝）
   --modules-dir DIR       模块目录 (默认 ./modules)
-  --workflows-dir DIR     工作流目录 (默认 ./workflows)
+  --workflows-dir DIR       工作流目录 (默认 ./workflows)
 
+调度:
+  --concurrency N       并发启动任务
+  --watch       对输入使用监听模式（等待器）
+  --cron * * * *        定时任务
+  
 日志:
-  --log-file PATH         JSON 行式事件日志
+  --log BOOL         生成 JSON 行式事件日志
 
 自检:
   --list-workflows        列出全部工作流
@@ -146,9 +150,9 @@ meta:
   name: My Workflow
   description: 工作流描述
   version: "2.0.0"
-atom: file              # file | folder | line | none（可选 GUI 元数据）
-scope: 1                # 0 | 1
-recurse: true           # 可选，目录输入递归展开为内部文件单元
+atom: file              # file | folder | line | none（ GUI 输入方式切换配置参数）
+scope: 1                # 0 | 1 | N
+recurse: true           # 递归开关
 steps:
   - module: my-module   # 模块 slug
     name: 步骤名称

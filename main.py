@@ -34,8 +34,8 @@ from core.exceptions import (
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="shell-worker",
-        description="Shell Worker Platform -- modular workflow runner.",
+        prog="AIYA SHELL (CLI)",
+        description="AIYA Shell Worker Platform -- modular workflow runner.",
     )
     p.add_argument("workflow", nargs="?", help="workflow YAML path or filename under workflows/")
 

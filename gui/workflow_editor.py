@@ -13,6 +13,7 @@ from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -46,7 +47,7 @@ class WorkflowEditor(QMainWindow):
         self._dirty = False
 
         self.setAttribute(Qt.WA_DeleteOnClose, True)
-        self.setWindowTitle("Workflow Editor")
+        self.setWindowTitle("AIYA Workflow Editor")
         self.resize(1200, 760)
 
         self._build_ui()

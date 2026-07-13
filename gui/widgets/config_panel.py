@@ -35,6 +35,9 @@ class ConfigPanel(QWidget):
     refresh_requested = Signal()
     edit_requested = Signal(object)       # WorkflowDefinition | None
     output_dir_changed = Signal(str)
+    watch_dir_changed = Signal(str)
+    cron_changed = Signal(str)
+    concurrency_changed = Signal(int)
     log_save_changed = Signal(bool)
     execute_requested = Signal()
     stop_requested = Signal()
@@ -85,6 +88,26 @@ class ConfigPanel(QWidget):
         self.workflow_desc_label.setStyleSheet("color: #7f8c8d; font-size: 9pt; padding: 4px;")
         layout.addWidget(self.workflow_desc_label)
 
+        row_watch_toggle = QHBoxLayout()
+        self.watch_checkbox = QCheckBox("启用文件监听")
+        self.watch_checkbox.setToolTip("开启后监控指定目录的文件变化，自动重新执行。\n输入区将切换为无输入模式。")
+        row_watch_toggle.addWidget(self.watch_checkbox)
+        row_watch_toggle.addStretch(1)
+        layout.addLayout(row_watch_toggle)
+
+        self._watch_dir_container = QWidget()
+        watch_dir_layout = QHBoxLayout(self._watch_dir_container)
+        watch_dir_layout.setContentsMargins(0, 0, 0, 0)
+        watch_dir_label = QLabel("监听目录 ")
+        self.watch_dir_input = QLineEdit()
+        self.watch_dir_input.setPlaceholderText("选择要监听的目录路径")
+        self.watch_dir_button = QPushButton("浏览")
+        watch_dir_layout.addWidget(watch_dir_label)
+        watch_dir_layout.addWidget(self.watch_dir_input, stretch=1)
+        watch_dir_layout.addWidget(self.watch_dir_button)
+        self._watch_dir_container.hide()
+        layout.addWidget(self._watch_dir_container)
+
         row_3 = QHBoxLayout()
         row_3.addWidget(QLabel("拷贝模式 "))
         self.mode_copy_radio = QRadioButton("开")
@@ -116,26 +139,6 @@ class ConfigPanel(QWidget):
         row_4.addWidget(self.output_dir_input, stretch=1)
         row_4.addWidget(self.output_dir_button)
         layout.addLayout(row_4)
-
-        row_watch_toggle = QHBoxLayout()
-        self.watch_checkbox = QCheckBox("启用文件监听")
-        self.watch_checkbox.setToolTip("开启后监控指定目录的文件变化，自动重新执行。\n输入区将切换为无输入模式。")
-        row_watch_toggle.addWidget(self.watch_checkbox)
-        row_watch_toggle.addStretch(1)
-        layout.addLayout(row_watch_toggle)
-
-        self._watch_dir_container = QWidget()
-        watch_dir_layout = QHBoxLayout(self._watch_dir_container)
-        watch_dir_layout.setContentsMargins(0, 0, 0, 0)
-        watch_dir_label = QLabel("    监听目录 ")
-        self.watch_dir_input = QLineEdit()
-        self.watch_dir_input.setPlaceholderText("选择要监听的目录路径")
-        self.watch_dir_button = QPushButton("浏览")
-        watch_dir_layout.addWidget(watch_dir_label)
-        watch_dir_layout.addWidget(self.watch_dir_input, stretch=1)
-        watch_dir_layout.addWidget(self.watch_dir_button)
-        self._watch_dir_container.hide()
-        layout.addWidget(self._watch_dir_container)
 
         row_concurrency = QHBoxLayout()
         concurrency_label = QLabel("并发数 ")
@@ -186,11 +189,14 @@ class ConfigPanel(QWidget):
         self.stop_button.clicked.connect(self.stop_requested.emit)
         self.watch_checkbox.stateChanged.connect(self._on_watch_state_changed)
         self.watch_dir_button.clicked.connect(self._choose_watch_dir)
+        self.watch_dir_input.textChanged.connect(
+            lambda t: (self._settings.setValue("watch_dir", t), self.watch_dir_changed.emit(t))
+        )
         self.concurrency_spinbox.valueChanged.connect(
-            lambda v: self._settings.setValue("concurrency", v)
+            lambda v: (self._settings.setValue("concurrency", v), self.concurrency_changed.emit(v))
         )
         self.cron_input.textChanged.connect(
-            lambda t: self._settings.setValue("cron", t)
+            lambda t: (self._settings.setValue("cron", t), self.cron_changed.emit(t))
         )
 
     def _restore_settings(self) -> None:
@@ -436,12 +442,6 @@ class ConfigPanel(QWidget):
         self.cron_input.setEnabled(not running)
         self.execute_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
-
-    def set_execute_enabled(self, enabled: bool) -> None:
-        self.execute_button.setEnabled(enabled)
-
-    def set_stop_enabled(self, enabled: bool) -> None:
-        self.stop_button.setEnabled(enabled)
 
     def get_selected_summary(self) -> WorkflowSummary | None:
         """Get the selected workflow summary."""
