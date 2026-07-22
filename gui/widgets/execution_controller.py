@@ -11,7 +11,7 @@ from pathlib import Path
 from threading import Event
 from typing import Any
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import QMessageBox
 
 from core import (
@@ -21,7 +21,6 @@ from core import (
     PipelineRuntime,
     WorkflowDefinition,
     WorkflowScheduler,
-    WorkflowLoader,
 )
 
 from .config_panel import ConfigPanel
@@ -77,6 +76,17 @@ class ExecutionWorker(QObject):
             self._scheduler.request_cancel()
         elif self.runtime is not None:
             self.runtime.request_cancel()
+
+    def terminate_session(self, session_id: str) -> bool:
+        if self._scheduler is not None:
+            return self._scheduler.terminate_session(session_id)
+        if self.runtime is None:
+            return False
+        session = self.runtime.sessions.get(session_id)
+        if session is None:
+            return False
+        session.terminate()
+        return True
 
     @Slot()
     def run(self) -> None:
@@ -507,7 +517,8 @@ class ExecutionController(QObject):
         if summary.get("success"):
             self.status_message.emit("执行完成")
             self.log_viewer.append_message(
-                f"执行完成：工作流 {summary.get('workflow_name', '')} 处理了 {summary.get('finished_inputs', 0)} 个输入。"
+                f"执行完成：工作流 {summary.get('workflow_name', '')} "
+                f"处理了 {summary.get('finished_inputs', 0)} 个输入。"
             )
             return
 
@@ -536,8 +547,8 @@ class ExecutionController(QObject):
 
         if event_type == "terminal:started":
             command = payload.get("command", "")
-            runtime = self._worker.runtime if self._worker is not None else None
-            win = TerminalWindow(session_id, command, runtime=runtime, parent=None)
+            stop_callback = self._worker.terminate_session if self._worker is not None else None
+            win = TerminalWindow(session_id, command, stop_callback=stop_callback, parent=None)
             win.destroyed.connect(lambda sid=session_id: self._terminal_windows.pop(sid, None))
             win.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
             win.show()

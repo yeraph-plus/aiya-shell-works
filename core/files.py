@@ -22,16 +22,95 @@ injected as ``ctx.shared["input_lines"]``.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from shutil import copy2, copytree
+from shutil import copy2, copytree, move, rmtree
+from tempfile import mkdtemp
 from typing import Any
 
 from .context import PipelineContext
 from .exceptions import FileHandlingError
 from .input import InputPlan
 
+
+@dataclass(frozen=True, slots=True)
+class UnitWorkspace:
+    """A clean per-unit staging directory owned by an execution workspace."""
+
+    index: int
+    path: Path
+
+
+class ExecutionWorkspace:
+    """Create clean unit workspaces and publish them into the final output."""
+
+    def __init__(self, output_dir: str | Path) -> None:
+        self.output_dir = Path(output_dir).resolve()
+        self.output_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.root = Path(mkdtemp(prefix=".shell-worker-", dir=self.output_dir.parent))
+
+    def create_unit(self, index: int) -> UnitWorkspace:
+        path = self.root / f"unit_{index:06d}"
+        path.mkdir(parents=True, exist_ok=False)
+        return UnitWorkspace(index=index, path=path)
+
+    def publish(self, unit: UnitWorkspace) -> None:
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        for source in sorted(unit.path.iterdir(), key=lambda item: item.name):
+            destination = self.output_dir / source.name
+            if source.is_dir():
+                if destination.is_file() or destination.is_symlink():
+                    destination.unlink()
+                copytree(source, destination, copy_function=copy2, dirs_exist_ok=True)
+            else:
+                if destination.is_dir():
+                    rmtree(destination)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                copy2(source, destination)
+
+    def map_context(self, ctx: PipelineContext, unit: UnitWorkspace) -> PipelineContext:
+        def remap(path: Path) -> Path:
+            try:
+                return self.output_dir / path.relative_to(unit.path)
+            except ValueError:
+                return path
+
+        return ctx.clone(
+            working_path=remap(ctx.working_path),
+            output_dir=self.output_dir,
+            extra_files=[remap(path) for path in ctx.extra_files],
+        )
+
+    def close(self) -> None:
+        rmtree(self.root, ignore_errors=True)
+
+    def __enter__(self) -> ExecutionWorkspace:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.close()
+
+
+def validate_output_separation(
+    paths: list[Path] | tuple[Path, ...],
+    output_dir: str | Path,
+    *,
+    strict: bool,
+) -> None:
+    """Reject source/output overlap before creating or enumerating output."""
+
+    output = Path(output_dir).resolve()
+    for raw_path in paths:
+        source = raw_path.resolve()
+        if source == output:
+            raise FileHandlingError(f"输入路径与输出目录不能相同: {source}")
+        source_contains_output = source.is_dir() and output.is_relative_to(source)
+        output_contains_source = source.is_relative_to(output)
+        if source_contains_output or (strict and output_contains_source):
+            raise FileHandlingError(f"输入路径与输出目录不能互相嵌套: {source} <-> {output}")
+
 # ---------------------------------------------------------------------------
-# Unit dicts: lightweight data carrier consumed by executor._prepare_context
+# Unit dicts: lightweight data carrier consumed by executor.prepare_context
 # ---------------------------------------------------------------------------
 
 
@@ -81,9 +160,18 @@ class WorkingCopier:
     so sidecar files have a landing strip — this is invariant §14.3.
     """
 
-    def __init__(self, output_dir: str | Path, *, direct_mode: bool = False) -> None:
+    def __init__(
+        self,
+        output_dir: str | Path,
+        *,
+        direct_mode: bool = False,
+        move_mode: bool = False,
+    ) -> None:
+        if direct_mode and move_mode:
+            raise ValueError("direct_mode and move_mode are mutually exclusive")
         self.output_dir = Path(output_dir)
         self.direct_mode = direct_mode
+        self.move_mode = move_mode
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
@@ -138,9 +226,9 @@ class WorkingCopier:
             try:
                 if source.is_file():
                     rel = self._resolve_relative(source, source_root)
-                    self._copy_into(source, batch_root / rel)
+                    self._transfer_into(source, batch_root / rel)
                 else:
-                    self._copy_into(source, batch_root / source.name)
+                    self._transfer_into(source, batch_root / source.name)
             except OSError as exc:
                 raise FileHandlingError(f"scope>1 批次复制失败: {source}") from exc
 
@@ -169,9 +257,9 @@ class WorkingCopier:
         else:
             try:
                 if source.is_file():
-                    working_path = self._copy_file(source, source_root=source_root)
+                    working_path = self._transfer_file(source, source_root=source_root)
                 else:
-                    working_path = self._copy_directory(source)
+                    working_path = self._transfer_directory(source)
             except OSError as exc:
                 raise FileHandlingError(f"复制失败: {source}") from exc
 
@@ -202,10 +290,13 @@ class WorkingCopier:
             try:
                 if p.is_file():
                     rel = Path(p.name)
-                    self._copy_into(p, self.output_dir / rel)
+                    self._transfer_into(p, self.output_dir / rel)
                 else:
                     target = self._make_unique_path(self.output_dir / p.name)
-                    copytree(p, target, copy_function=copy2)
+                    if self.move_mode:
+                        move(str(p), str(target))
+                    else:
+                        copytree(p, target, copy_function=copy2)
             except OSError as exc:
                 raise FileHandlingError(f"shared 合并复制失败: {p}") from exc
 
@@ -229,6 +320,17 @@ class WorkingCopier:
             copytree(source, destination, copy_function=copy2)
         return destination
 
+    def _transfer_into(self, source: Path, destination: Path) -> Path:
+        destination = self._make_unique_path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if self.move_mode:
+            return Path(move(str(source), str(destination)))
+        if source.is_file():
+            copy2(source, destination)
+        else:
+            copytree(source, destination, copy_function=copy2)
+        return destination
+
     def _copy_file(self, source: Path, *, source_root: Path | None = None) -> Path:
         relative = self._resolve_relative(source, source_root)
         destination = self._make_unique_path(self.output_dir / relative)
@@ -236,10 +338,24 @@ class WorkingCopier:
         copy2(source, destination)
         return destination
 
+    def _transfer_file(self, source: Path, *, source_root: Path | None = None) -> Path:
+        if not self.move_mode:
+            return self._copy_file(source, source_root=source_root)
+        relative = self._resolve_relative(source, source_root)
+        destination = self._make_unique_path(self.output_dir / relative)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        return Path(move(str(source), str(destination)))
+
     def _copy_directory(self, source: Path) -> Path:
         destination = self._make_unique_path(self.output_dir / source.name)
         copytree(source, destination, copy_function=copy2)
         return destination
+
+    def _transfer_directory(self, source: Path) -> Path:
+        if not self.move_mode:
+            return self._copy_directory(source)
+        destination = self._make_unique_path(self.output_dir / source.name)
+        return Path(move(str(source), str(destination)))
 
     @staticmethod
     def _resolve_relative(source: Path, source_root: Path | None) -> Path:

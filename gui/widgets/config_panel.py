@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core import WorkflowDefinition, WorkflowSummary, WorkflowLoader
+from core import WorkflowDefinition, WorkflowLoader, WorkflowSummary
 
 
 class ConfigPanel(QWidget):
@@ -109,7 +109,8 @@ class ConfigPanel(QWidget):
         layout.addWidget(self._watch_dir_container)
 
         row_3 = QHBoxLayout()
-        row_3.addWidget(QLabel("拷贝模式 "))
+        self.copy_mode_label = QLabel("拷贝模式 ")
+        row_3.addWidget(self.copy_mode_label)
         self.mode_copy_radio = QRadioButton("开")
         self.mode_direct_radio = QRadioButton("关")
         self.mode_copy_radio.setChecked(True)
@@ -226,6 +227,7 @@ class ConfigPanel(QWidget):
         saved_cron = self._settings.value("cron", "")
         if saved_cron:
             self.cron_input.setText(saved_cron)
+        self._update_copy_mode_text()
 
     def load_workflows(self, selected_path: Path | None = None) -> None:
         """Load workflows and populate the combo box."""
@@ -331,13 +333,13 @@ class ConfigPanel(QWidget):
             return
 
         atom = summary.atom
-        _ATOM_LABELS = {
+        atom_labels = {
             "file": "逐文件执行",
             "folder": "逐文件夹执行",
             "line": "按行输入",
             "none": "无输入",
         }
-        atom_label = _ATOM_LABELS.get(atom, "自动识别") if atom else "自动识别"
+        atom_label = atom_labels.get(atom, "自动识别") if atom else "自动识别"
 
         if summary.scope == 0:
             scope_label = "合并执行"
@@ -359,6 +361,7 @@ class ConfigPanel(QWidget):
         is_direct = self.mode_direct_radio.isChecked()
         self._direct_warning_label.setVisible(is_direct)
         self._settings.setValue("direct_mode", is_direct)
+        self._update_copy_mode_text()
 
     def _choose_output_dir(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "选择产物目录")
@@ -384,7 +387,29 @@ class ConfigPanel(QWidget):
         enabled = state == 2
         self._watch_dir_container.setVisible(enabled)
         self._settings.setValue("watch_enabled", enabled)
+        self._update_copy_mode_text()
         self.watch_state_changed.emit(enabled)
+
+    def _update_copy_mode_text(self) -> None:
+        watching = self.watch_checkbox.isChecked()
+        if watching:
+            self.copy_mode_label.setText("监听文件传输 ")
+            self.mode_copy_radio.setText("拷贝")
+            self.mode_direct_radio.setText("移动")
+            self.mode_copy_radio.setToolTip("把稳定的变化文件拷贝到产物目录后执行。")
+            self.mode_direct_radio.setToolTip("把稳定的变化文件移出监听目录并送入产物目录。")
+            self._direct_warning_label.setText(
+                '<span style="color:#e67e22;font-weight:bold;">警告：监听文件将从原目录移走！</span>'
+            )
+        else:
+            self.copy_mode_label.setText("拷贝模式 ")
+            self.mode_copy_radio.setText("开")
+            self.mode_direct_radio.setText("关")
+            self.mode_copy_radio.setToolTip("将文件复制到产物目录后操作副本，不修改原文件。")
+            self.mode_direct_radio.setToolTip("直接在原始文件上操作，不会创建副本。")
+            self._direct_warning_label.setText(
+                '<span style="color:#e67e22;font-weight:bold;">警告：将直接修改原始文件！</span>'
+            )
 
     def _choose_watch_dir(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "选择监听目录")

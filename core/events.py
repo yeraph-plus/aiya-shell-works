@@ -163,6 +163,7 @@ class JSONLFileSink:
 
     def __init__(self, path: str | Any, *, encoding: str = "utf-8") -> None:
         import json
+        import threading
         from pathlib import Path
 
         self._path = Path(path)
@@ -170,6 +171,7 @@ class JSONLFileSink:
         self._encoding = encoding
         self._fh = self._path.open("a", encoding=encoding, newline="\n")
         self._json = json
+        self._lock = threading.Lock()
 
     def write(self, event: PipelineEvent) -> None:
         from datetime import datetime
@@ -182,11 +184,13 @@ class JSONLFileSink:
             "data": event.data,
         }
         line = self._json.dumps(record, ensure_ascii=False)
-        self._fh.write(line + "\n")
-        self._fh.flush()
+        with self._lock:
+            self._fh.write(line + "\n")
+            self._fh.flush()
 
     def close(self) -> None:
-        try:
-            self._fh.close()
-        except Exception:  # pragma: no cover
-            pass
+        with self._lock:
+            try:
+                self._fh.close()
+            except Exception:  # pragma: no cover
+                pass

@@ -40,7 +40,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("workflow", nargs="?", help="workflow YAML path or filename under workflows/")
 
     # ---- input axes ----
-    p.add_argument("--files", nargs="+", default=None, help="input file/folder paths, supports glob")
+    p.add_argument(
+        "--files",
+        nargs="+",
+        default=None,
+        help="input paths or glob patterns (*, ?, [], **); unmatched patterns are errors",
+    )
     p.add_argument(
         "--recurse",
         action="store_true",
@@ -53,7 +58,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # ---- execution ----
     p.add_argument("--output-dir", default=None, help="output directory (default ./out)")
     p.add_argument(
-        "--direct", action="store_true", default=False, help="direct mode: operate on original files without copying"
+        "--direct",
+        action="store_true",
+        default=False,
+        help="without --watch: operate on originals; with --watch: move changed files into output",
     )
     p.add_argument("--modules-dir", default="modules", help="modules directory")
     p.add_argument("--workflows-dir", default="workflows", help="workflows directory")
@@ -62,8 +70,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--concurrency", "-j", type=int, default=1, metavar="N", help="parallel worker count (default 1, sequential)"
     )
-    p.add_argument("--watch", action="store_true", default=False, help="watch input files for changes and re-execute")
-    p.add_argument("--cron", default=None, metavar="EXPR", help="cron expression for periodic execution, e.g. '*/5 * * * *'")
+    p.add_argument(
+        "--watch",
+        action="store_true",
+        default=False,
+        help="watch for new/modified/moved files; existing files are not processed initially",
+    )
+    p.add_argument(
+        "--cron",
+        default=None,
+        metavar="EXPR",
+        help="cron expression for periodic execution, e.g. '*/5 * * * *'",
+    )
 
     # ---- logging ----
     p.add_argument("--log", action="store_true", default=False, help="enable JSONL event log to output directory")
@@ -94,12 +112,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     output_dir = Path(args.output_dir) if args.output_dir else Path.cwd() / "out"
 
     workflow_arg: str | Path = args.workflow
-    if not Path(workflow_arg).is_absolute() and not Path(workflow_arg).exists():
-        candidate = workflows_dir / workflow_arg
-        if candidate.suffix.lower() not in (".yaml", ".yml"):
-            candidate = candidate.with_suffix(".yaml")
-        if candidate.exists():
-            workflow_arg = candidate
+    workflow_path = Path(workflow_arg)
+    if not workflow_path.is_absolute():
+        if workflow_path.exists():
+            workflow_arg = workflow_path.resolve()
+        else:
+            candidate = workflows_dir / workflow_path
+            if candidate.suffix.lower() not in (".yaml", ".yml"):
+                candidate = candidate.with_suffix(".yaml")
+            if candidate.exists():
+                workflow_arg = candidate
 
     try:
         module_manager = ModuleManager(modules_dir)

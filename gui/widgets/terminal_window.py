@@ -1,22 +1,20 @@
-"""Read-only terminal window for PTY-backed subprocess output."""
+"""Read-only terminal window with explicit stop and close actions."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Callable
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
     QDialog,
+    QHBoxLayout,
+    QLabel,
     QPlainTextEdit,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
-
-from core import get_session
-
-if TYPE_CHECKING:
-    from core import PipelineRuntime
 
 
 class TerminalWindow(QDialog):
@@ -30,14 +28,13 @@ class TerminalWindow(QDialog):
         session_id: str,
         command: str,
         *,
-        runtime: PipelineRuntime | None = None,
+        stop_callback: Callable[[str], bool] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._session_id = session_id
-        self._runtime = runtime
+        self._stop_callback = stop_callback
         self.setWindowTitle(f"终端 — {command}")
-        self._dismissed = False
         self.resize(680, 440)
         self.setWindowFlags(
             Qt.WindowType.Window
@@ -62,16 +59,25 @@ class TerminalWindow(QDialog):
         self._output.setStyleSheet("QPlainTextEdit { background-color: #1e1e1e; color: #d4d4d4; }")
         layout.addWidget(self._output, stretch=1)
 
-    def closeEvent(self, event) -> None:
-        self._dismissed = True
-        QTimer.singleShot(0, self._terminate_session)
-        super().closeEvent(event)
+        controls = QHBoxLayout()
+        self._status = QLabel("运行中")
+        controls.addWidget(self._status)
+        controls.addStretch(1)
+        self._stop_button = QPushButton("停止")
+        self._stop_button.clicked.connect(self._stop_session)
+        controls.addWidget(self._stop_button)
+        close_button = QPushButton("关闭")
+        close_button.clicked.connect(self.close)
+        controls.addWidget(close_button)
+        layout.addLayout(controls)
 
-    def _terminate_session(self) -> None:
-        if self._runtime is not None:
-            session = get_session(self._runtime, self._session_id)
-            if session is not None and session.exit_code is None:
-                session.terminate()
+    def _stop_session(self) -> None:
+        if self._stop_callback is None or not self._stop_callback(self._session_id):
+            self._status.setText("无法停止：会话已结束")
+            self._stop_button.setEnabled(False)
+            return
+        self._status.setText("正在停止")
+        self._stop_button.setEnabled(False)
 
     def append_output(self, text: str) -> None:
         """Thread-safe: emit signal so text lands on the GUI thread."""
@@ -89,6 +95,6 @@ class TerminalWindow(QDialog):
         self._output.ensureCursorVisible()
 
     def _on_finished(self, exit_code: int) -> None:
-        if self._dismissed:
-            return
         self._append_output(f"\n进程结束，退出码: {exit_code}\n")
+        self._status.setText(f"已结束（{exit_code}）")
+        self._stop_button.setEnabled(False)

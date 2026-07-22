@@ -23,7 +23,8 @@ process boundary.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,10 @@ class PipelineRuntime:
         enable_log: bool = False,
         output_dir: str | Path | None = None,
         workflow_slug: str = "",
+        sessions: TerminalSessionRegistry | None = None,
+        owns_log_sink: bool = True,
+        owns_sessions: bool = True,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         self._log_sink = log_sink
         if enable_log and log_sink is None and output_dir:
@@ -52,8 +57,10 @@ class PipelineRuntime:
             slug_part = f"_{workflow_slug}" if workflow_slug else ""
             path = Path(output_dir) / f"{ts}{slug_part}.jsonl"
             self._log_sink = JSONLFileSink(path)
-        self._sessions = TerminalSessionRegistry()
-        self._cancel = False
+        self._sessions = sessions or TerminalSessionRegistry()
+        self._owns_log_sink = owns_log_sink
+        self._owns_sessions = owns_sessions
+        self._cancel_event = cancel_event or threading.Event()
         self._resuming = False
         self._bus: EventBus = EventBus(sink=self._log_sink)
         # Persistent listeners are re-attached to every new bus that replaces the
@@ -94,7 +101,8 @@ class PipelineRuntime:
         not about who listens going forward.
         """
 
-        self._persistent_listeners.append(listener)
+        if listener not in self._persistent_listeners:
+            self._persistent_listeners.append(listener)
         self._bus.subscribe(listener)
 
         def _unsubscribe() -> None:
@@ -134,6 +142,20 @@ class PipelineRuntime:
     def _iter_persistent_listeners(self) -> list[Callable[[PipelineEvent], None]]:
         return list(self._persistent_listeners)
 
+    def fork(self) -> PipelineRuntime:
+        """Create an isolated event bus sharing sessions, sink and listeners."""
+
+        runtime = PipelineRuntime(
+            log_sink=self._log_sink,
+            sessions=self._sessions,
+            owns_log_sink=False,
+            owns_sessions=False,
+            cancel_event=self._cancel_event,
+        )
+        for listener in self._persistent_listeners:
+            runtime.subscribe(listener)
+        return runtime
+
     # ------------------------------------------------------------------
     # Terminal session surface
     # ------------------------------------------------------------------
@@ -144,18 +166,40 @@ class PipelineRuntime:
 
     def spawn(
         self,
-        command: list[str],
+        command: Sequence[str] | str,
         *,
         cwd: str | Path | None = None,
         env: dict[str, str] | None = None,
         exit_pattern: str | None = None,
         exit_action: str = "write_newline",
+        shell: bool = False,
     ) -> TerminalResult:
         """Spawn ``command`` in a PTY (or subprocess fallback) and block.
 
         Output is streamed to the active bus as ``terminal:output`` events
         so GUI layers (or CLI sinks) stay uniform regardless of platform.
         """
+
+        return self.start(
+            command,
+            cwd=cwd,
+            env=env,
+            exit_pattern=exit_pattern,
+            exit_action=exit_action,
+            shell=shell,
+        ).wait()
+
+    def start(
+        self,
+        command: Sequence[str] | str,
+        *,
+        cwd: str | Path | None = None,
+        env: dict[str, str] | None = None,
+        exit_pattern: str | None = None,
+        exit_action: str = "write_newline",
+        shell: bool = False,
+    ) -> TerminalSession:
+        """Start a live child session and return immediately."""
 
         session = TerminalSession(
             cmd=command,
@@ -164,12 +208,15 @@ class PipelineRuntime:
             env=env,
             exit_pattern=exit_pattern,
             exit_action=exit_action,
+            shell=shell,
+            on_finished=self._sessions.unregister,
         )
         self._sessions.register(session)
         try:
-            return session.run()
-        finally:
+            return session.start()
+        except Exception:
             self._sessions.unregister(session)
+            raise
 
     # ------------------------------------------------------------------
     # Cancellation surface
@@ -178,10 +225,10 @@ class PipelineRuntime:
     def request_cancel(self) -> None:
         """Request graceful stop at the next step boundary."""
 
-        self._cancel = True
+        self._cancel_event.set()
 
     def is_cancelled(self) -> bool:
-        return self._cancel
+        return self._cancel_event.is_set()
 
     # ------------------------------------------------------------------
     # Resume surface (reserved for P5 pause/resume capability)
@@ -200,7 +247,8 @@ class PipelineRuntime:
     def close(self) -> None:
         """Tear down log sinks and outstanding terminal sessions."""
 
-        self._sessions.close_all()
+        if self._owns_sessions:
+            self._sessions.close_all()
         sink = self._log_sink
-        if isinstance(sink, JSONLFileSink):
+        if self._owns_log_sink and isinstance(sink, JSONLFileSink):
             sink.close()

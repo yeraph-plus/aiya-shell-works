@@ -17,6 +17,8 @@ NOT exposed to modules as a hard constraint — modules read ``ctx.is_file`` /
 
 from __future__ import annotations
 
+import glob
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +26,7 @@ from pathlib import Path
 from .exceptions import PipelineExecutionError
 
 _PLAN_KINDS = ("path", "line", "none")
+_GLOB_MAGIC = ("*", "?", "[")
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,7 +66,7 @@ def resolve_input(
     construction (which needs ``output_dir`` to compute ``source_root``).
     """
 
-    raw_files = [Path(p) for p in files] if files else []
+    raw_files = _expand_file_inputs(files or [])
 
     if raw_files:
         for p in raw_files:
@@ -84,3 +87,31 @@ def resolve_input(
         return InputPlan(kind="line", lines=tuple(lines))
 
     return InputPlan(kind="none")
+
+
+def _expand_file_inputs(files: list[str | Path]) -> list[Path]:
+    """Expand CLI/API glob tokens while preserving deterministic order."""
+
+    expanded: list[Path] = []
+    seen: set[str] = set()
+    for raw in files:
+        token = os.fspath(raw)
+        path = Path(token)
+        if path.exists():
+            matches = [path]
+        elif any(char in token for char in _GLOB_MAGIC):
+            matches = [Path(match) for match in glob.glob(token, recursive=True, include_hidden=False)]
+            if not matches:
+                raise PipelineExecutionError(f"--files 通配符未匹配任何路径: {token}")
+        else:
+            matches = [path]
+
+        for match in matches:
+            if not match.exists():
+                raise PipelineExecutionError(f"--files 指定的路径不存在: {match}")
+            key = os.path.normcase(str(match.resolve()))
+            if key in seen:
+                continue
+            seen.add(key)
+            expanded.append(match)
+    return expanded

@@ -37,10 +37,11 @@ dev = [
 shell-worker = "main:main"
 
 [project.gui-scripts]
-shell-worker-gui = "main_gui:main"
+shell-worker-gui = "gui.launcher:main"
 
 [tool.setuptools]
-packages = ["core", "gui", "gui.widgets", "modules"]
+packages = ["core", "gui", "gui.editor", "gui.widgets", "modules"]
+py-modules = ["main"]
 
 [tool.ruff]
 line-length = 120

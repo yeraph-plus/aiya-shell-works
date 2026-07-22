@@ -21,12 +21,13 @@ from .events import (
 )
 from .exceptions import (
     FileHandlingError,
+    ModuleExecutionError,
     PipelineCancelledError,
     PipelineExecutionError,
+    TerminalSpawnError,
     WorkflowValidationError,
 )
 from .executor import PipelineExecutor, PreparedStep, execute_workflow
-from .scheduler import WorkflowScheduler
 from .files import WorkingCopier, build_lines_units, build_path_units, make_unique_path, units_from_plan
 from .input import InputPlan, resolve_input
 from .input_inspector import InputInspector, ValidationResult
@@ -35,6 +36,7 @@ from .module_manager import (
     ModuleManager,
 )
 from .runtime import PipelineRuntime
+from .scheduler import WorkflowScheduler
 from .terminal import TerminalResult, TerminalSession, TerminalSessionRegistry, get_session
 from .tools import collect_file_targets, ensure_pty_available, parse_extension_set
 from .workflow_loader import (
@@ -89,6 +91,8 @@ __all__ = [
     "PreparedStep",
     "PipelineCancelledError",
     "PipelineExecutionError",
+    "ModuleExecutionError",
+    "TerminalSpawnError",
     "FileHandlingError",
     "ConfigSchemaValidationError",
     "ConfigValidationError",

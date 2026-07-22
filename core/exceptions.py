@@ -15,11 +15,19 @@ class PipelineExecutionError(ShellWorkerError):
     """Raised before / during execution for invalid workflow setup or step contract."""
 
 
+class ModuleExecutionError(PipelineExecutionError):
+    """Raised when a workflow module fails while executing one step."""
+
+
+class TerminalSpawnError(ShellWorkerError, OSError):
+    """Raised when a terminal child process cannot be started."""
+
+
 class PipelineCancelledError(ShellWorkerError):
     """Raised when a cancel signal is observed at a safe boundary."""
 
 
-class FileHandlingError(ShellWorkerError):
+class FileHandlingError(PipelineExecutionError):
     """Raised when copying / preparing a working unit fails."""
 
 

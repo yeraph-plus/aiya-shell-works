@@ -22,6 +22,7 @@ is ``PipelineContext | None | dict[str, ctx]``.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -33,11 +34,12 @@ from .config_schema import (
 )
 from .context import PipelineContext
 from .exceptions import (
+    ModuleExecutionError,
     PipelineCancelledError,
     PipelineExecutionError,
     WorkflowValidationError,
 )
-from .files import WorkingCopier, units_from_plan
+from .files import ExecutionWorkspace, UnitWorkspace, WorkingCopier, units_from_plan, validate_output_separation
 from .input import InputPlan, resolve_input
 from .module_manager import ModuleDefinition, ModuleManager
 from .runtime import PipelineRuntime
@@ -172,12 +174,14 @@ class PipelineExecutor:
         progress_callback: ProgressCallback | None = None,
         cancel_requested: CancelCallback | None = None,
         event_listener: EventCallback | None = None,
+        concurrency: int = 1,
     ) -> None:
         self.module_manager = module_manager
         self.runtime = runtime or PipelineRuntime()
         self.progress_callback = progress_callback
         self.cancel_requested = cancel_requested
         self.event_listener = event_listener
+        self.concurrency = max(1, concurrency)
 
     def execute(
         self,
@@ -191,6 +195,7 @@ class PipelineExecutor:
         recurse: bool = False,
         lines_text: str | None = None,
         lines_file: str | Path | None = None,
+        move_mode: bool = False,
     ) -> dict[str, Any]:
         """Run a workflow.  Returns a summary dict."""
 
@@ -206,10 +211,11 @@ class PipelineExecutor:
             lines_file=lines_file,
         )
 
-        steps = self._prepare_steps(definition)
-        copier = WorkingCopier(output_dir, direct_mode=direct_mode)
+        if plan.kind == "path" and (move_mode or not direct_mode):
+            validate_output_separation(list(plan.files), output_dir, strict=True)
 
-        units = self._build_units(definition, plan, copier, shared)
+        steps = self._prepare_steps(definition)
+        units = build_units(definition, plan)
         total = len(units)
         errors: list[dict[str, Any]] = []
         successful = 0
@@ -220,70 +226,41 @@ class PipelineExecutor:
             "executor",
             "message",
             f"start workflow: {definition.meta.name} "
-            f"(scope={definition.scope}, "
-            f"recurse={definition.recurse}, units={total}, direct={direct_mode})",
+            f"(scope={definition.scope}, recurse={definition.recurse}, units={total}, "
+            f"direct={direct_mode}, move={move_mode}, concurrency={self.concurrency})",
         )
         self._report_progress(0, total, None, "starting")
 
         for warning in self.module_manager.warnings:
             active_runtime.log("executor", "warning", f"module scan warning: {warning}")
 
-        for idx, unit in enumerate(units, start=1):
-            try:
-                self._raise_if_cancelled(active_runtime)
-            except PipelineCancelledError as exc:
-                cancelled = True
-                active_runtime.log("executor", "warning", str(exc))
-                break
-            try:
-                if definition.scope != 0:
-                    active_runtime.replace_bus()
-
-                ctx = self._prepare_context(definition, plan, copier, unit, shared=shared)
-                final_ctx = self._run_unit(
-                    ctx=ctx,
-                    runtime=active_runtime,
-                    unit_index=idx,
-                    total_units=total,
+        with ExecutionWorkspace(output_dir) as workspace:
+            if self.concurrency > 1 and total > 1 and definition.scope != 0:
+                successful, cancelled = self._execute_parallel(
+                    definition=definition,
+                    plan=plan,
                     steps=steps,
+                    units=units,
+                    workspace=workspace,
+                    direct_mode=direct_mode,
+                    move_mode=move_mode,
+                    shared=shared,
+                    results=results,
+                    errors=errors,
                 )
-                successful += 1
-                results.append(
-                    {
-                        "success": True,
-                        "unit": _unit_display(unit),
-                        "working_path": str(final_ctx.working_path),
-                        "original_input": _display_name(final_ctx.original_input),
-                    }
+            else:
+                successful, cancelled = self._execute_sequential(
+                    definition=definition,
+                    plan=plan,
+                    steps=steps,
+                    units=units,
+                    workspace=workspace,
+                    direct_mode=direct_mode,
+                    move_mode=move_mode,
+                    shared=shared,
+                    results=results,
+                    errors=errors,
                 )
-                self._report_progress(idx, total, _unit_display(unit), "completed")
-            except PipelineCancelledError:
-                cancelled = True
-                active_runtime.log(
-                    "executor", "warning", f"cancelled: unit {idx}/{total} ({_unit_display(unit) or '<none>'})"
-                )
-                break
-            except Exception as exc:
-                err = {
-                    "unit": _unit_display(unit),
-                    "error": str(exc),
-                    "type": type(exc).__name__,
-                }
-                errors.append(err)
-                results.append(
-                    {
-                        "success": False,
-                        "unit": err["unit"],
-                        "error": err["error"],
-                        "type": err["type"],
-                    }
-                )
-                active_runtime.log(
-                    "executor",
-                    "error",
-                    f"unit failed [{idx}/{total}]: {err['unit'] or '<none>'} -> {err['error']}",
-                )
-                self._report_progress(idx, total, _unit_display(unit), "failed")
 
         completed = successful + len(errors)
         success = not errors and not cancelled
@@ -297,7 +274,7 @@ class PipelineExecutor:
             "results": results,
             "workflow": definition.meta.name,
             "scope": definition.scope,
-            "output_dir": str(copier.output_dir),
+            "output_dir": str(Path(output_dir).resolve()),
         }
         active_runtime.log(
             "executor",
@@ -307,32 +284,189 @@ class PipelineExecutor:
         self._report_progress(completed, total, None, "cancelled" if cancelled else "done")
         return summary
 
+    def _execute_sequential(
+        self,
+        *,
+        definition: WorkflowDefinition,
+        plan: InputPlan,
+        steps: list[PreparedStep],
+        units: list[dict[str, Any]],
+        workspace: ExecutionWorkspace,
+        direct_mode: bool,
+        move_mode: bool,
+        shared: Mapping[str, Any] | None,
+        results: list[dict[str, Any]],
+        errors: list[dict[str, Any]],
+    ) -> tuple[int, bool]:
+        successful = 0
+        total = len(units)
+        for idx, unit in enumerate(units, start=1):
+            unit_workspace = workspace.create_unit(idx)
+            try:
+                self._raise_if_cancelled(self.runtime)
+                if definition.scope != 0:
+                    self.runtime.replace_bus()
+                final_ctx = self._execute_unit(
+                    definition=definition,
+                    plan=plan,
+                    unit=unit,
+                    unit_workspace=unit_workspace,
+                    direct_mode=direct_mode,
+                    move_mode=move_mode,
+                    shared=shared,
+                    runtime=self.runtime,
+                    unit_index=idx,
+                    total_units=total,
+                    steps=steps,
+                )
+                workspace.publish(unit_workspace)
+                final_ctx = workspace.map_context(final_ctx, unit_workspace)
+                successful += 1
+                results.append(self._success_result(unit, final_ctx))
+                self._report_progress(idx, total, _unit_display(unit), "completed")
+            except PipelineCancelledError:
+                if move_mode:
+                    workspace.publish(unit_workspace)
+                self.runtime.log(
+                    "executor", "warning", f"cancelled: unit {idx}/{total} ({_unit_display(unit) or '<none>'})"
+                )
+                return successful, True
+            except Exception as exc:
+                if move_mode:
+                    workspace.publish(unit_workspace)
+                self._record_failure(unit, idx, total, exc, results, errors, self.runtime)
+        return successful, False
+
+    def _execute_parallel(
+        self,
+        *,
+        definition: WorkflowDefinition,
+        plan: InputPlan,
+        steps: list[PreparedStep],
+        units: list[dict[str, Any]],
+        workspace: ExecutionWorkspace,
+        direct_mode: bool,
+        move_mode: bool,
+        shared: Mapping[str, Any] | None,
+        results: list[dict[str, Any]],
+        errors: list[dict[str, Any]],
+    ) -> tuple[int, bool]:
+        futures: dict[Future[PipelineContext], tuple[int, dict[str, Any], UnitWorkspace, PipelineRuntime]] = {}
+        outcomes: dict[int, tuple[PipelineContext | None, Exception | None, dict[str, Any], UnitWorkspace]] = {}
+        total = len(units)
+        with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
+            for idx, unit in enumerate(units, start=1):
+                if self._is_cancelled():
+                    break
+                unit_workspace = workspace.create_unit(idx)
+                runtime = self.runtime.fork()
+                future = pool.submit(
+                    self._execute_unit,
+                    definition=definition,
+                    plan=plan,
+                    unit=unit,
+                    unit_workspace=unit_workspace,
+                    direct_mode=direct_mode,
+                    move_mode=move_mode,
+                    shared=shared,
+                    runtime=runtime,
+                    unit_index=idx,
+                    total_units=total,
+                    steps=steps,
+                )
+                futures[future] = (idx, unit, unit_workspace, runtime)
+
+            for future in as_completed(futures):
+                idx, unit, unit_workspace, runtime = futures[future]
+                try:
+                    outcomes[idx] = (future.result(), None, unit, unit_workspace)
+                    self._report_progress(len(outcomes), total, _unit_display(unit), "completed")
+                except Exception as exc:
+                    outcomes[idx] = (None, exc, unit, unit_workspace)
+                    status = "cancelled" if isinstance(exc, PipelineCancelledError) else "failed"
+                    self._report_progress(len(outcomes), total, _unit_display(unit), status)
+                finally:
+                    runtime.close()
+
+        successful = 0
+        cancelled = self._is_cancelled()
+        for idx in sorted(outcomes):
+            final_ctx, error, unit, unit_workspace = outcomes[idx]
+            if error is None and final_ctx is not None:
+                workspace.publish(unit_workspace)
+                mapped = workspace.map_context(final_ctx, unit_workspace)
+                results.append(self._success_result(unit, mapped))
+                successful += 1
+            elif isinstance(error, PipelineCancelledError):
+                cancelled = True
+                if move_mode:
+                    workspace.publish(unit_workspace)
+            elif error is not None:
+                if move_mode:
+                    workspace.publish(unit_workspace)
+                self._record_failure(unit, idx, total, error, results, errors, self.runtime, report_progress=False)
+        return successful, cancelled
+
+    def _execute_unit(
+        self,
+        *,
+        definition: WorkflowDefinition,
+        plan: InputPlan,
+        unit: dict[str, Any],
+        unit_workspace: UnitWorkspace,
+        direct_mode: bool,
+        move_mode: bool,
+        shared: Mapping[str, Any] | None,
+        runtime: PipelineRuntime,
+        unit_index: int,
+        total_units: int,
+        steps: list[PreparedStep],
+    ) -> PipelineContext:
+        self._raise_if_cancelled(runtime)
+        copier = WorkingCopier(unit_workspace.path, direct_mode=direct_mode, move_mode=move_mode)
+        ctx = prepare_context(definition, plan, copier, unit, shared=shared)
+        return self._run_unit(
+            ctx=ctx,
+            runtime=runtime,
+            unit_index=unit_index,
+            total_units=total_units,
+            steps=steps,
+        )
+
+    @staticmethod
+    def _success_result(unit: dict[str, Any], ctx: PipelineContext) -> dict[str, Any]:
+        return {
+            "success": True,
+            "unit": _unit_display(unit),
+            "working_path": str(ctx.working_path),
+            "original_input": _display_name(ctx.original_input),
+        }
+
+    def _record_failure(
+        self,
+        unit: dict[str, Any],
+        index: int,
+        total: int,
+        exc: Exception,
+        results: list[dict[str, Any]],
+        errors: list[dict[str, Any]],
+        runtime: PipelineRuntime,
+        *,
+        report_progress: bool = True,
+    ) -> None:
+        error = {"unit": _unit_display(unit), "error": str(exc), "type": type(exc).__name__}
+        errors.append(error)
+        results.append({"success": False, **error})
+        runtime.log(
+            "executor",
+            "error",
+            f"unit failed [{index}/{total}]: {error['unit'] or '<none>'} -> {error['error']}",
+        )
+        if report_progress:
+            self._report_progress(index, total, _unit_display(unit), "failed")
+
     def _prepare_steps(self, workflow: WorkflowDefinition) -> list[PreparedStep]:
         return prepare_steps(workflow, self.module_manager)
-
-    # ------------------------------------------------------------------
-    # Unit construction
-    # ------------------------------------------------------------------
-
-    def _build_units(
-        self,
-        workflow: WorkflowDefinition,
-        plan: InputPlan,
-        copier: WorkingCopier,
-        shared: Mapping[str, Any] | None,
-    ) -> list[dict[str, Any]]:
-        return build_units(workflow, plan)
-
-    def _prepare_context(
-        self,
-        workflow: WorkflowDefinition,
-        plan: InputPlan,
-        copier: WorkingCopier,
-        unit: dict[str, Any],
-        *,
-        shared: Mapping[str, Any] | None,
-    ) -> PipelineContext:
-        return prepare_context(workflow, plan, copier, unit, shared=shared)
 
     # ------------------------------------------------------------------
     # Unit execution
@@ -361,8 +495,17 @@ class PipelineExecutor:
                 f"start step [{unit_index}/{total_units}] {step.index}/{len(steps)}: {step.name}",
             )
 
-            result = step.module_definition.run(current, dict(step.params), runtime)
-            current = self._resolve_step_result(step_name=step.name, result=result, fallback=current)
+            try:
+                result = step.module_definition.run(current, dict(step.params), runtime)
+                current = self._resolve_step_result(step_name=step.name, result=result, fallback=current)
+            except PipelineCancelledError:
+                raise
+            except ModuleExecutionError:
+                raise
+            except Exception as exc:
+                raise ModuleExecutionError(
+                    f"module {step.module_slug} failed at step {step.index} ({step.name}): {exc}"
+                ) from exc
 
             runtime.log(
                 step.module_slug,
@@ -399,6 +542,11 @@ class PipelineExecutor:
             raise PipelineCancelledError("execution cancelled.")
         if runtime.is_cancelled():
             raise PipelineCancelledError("execution cancelled.")
+        if self.runtime.is_cancelled():
+            raise PipelineCancelledError("execution cancelled.")
+
+    def _is_cancelled(self) -> bool:
+        return bool((self.cancel_requested and self.cancel_requested()) or self.runtime.is_cancelled())
 
 
 def execute_workflow(
@@ -417,6 +565,8 @@ def execute_workflow(
     cancel_requested: CancelCallback | None = None,
     event_listener: EventCallback | None = None,
     shared: Mapping[str, Any] | None = None,
+    concurrency: int = 1,
+    move_mode: bool = False,
 ) -> dict[str, Any]:
     """Standalone runner for CLI callers and tests.
 
@@ -425,6 +575,14 @@ def execute_workflow(
     """
 
     definition = _resolve_workflow_definition(workflow, workflows_dir=workflows_dir)
+    plan = resolve_input(
+        files=files,
+        recurse=recurse,
+        lines_text=lines_text,
+        lines_file=lines_file,
+    )
+    if plan.kind == "path" and (move_mode or not direct_mode):
+        validate_output_separation(list(plan.files), output_dir, strict=True)
     runtime = PipelineRuntime(
         enable_log=enable_log,
         output_dir=output_dir,
@@ -437,16 +595,15 @@ def execute_workflow(
         progress_callback=progress_callback,
         cancel_requested=cancel_requested,
         event_listener=event_listener,
+        concurrency=concurrency,
     )
     try:
         return executor.execute(
             definition,
             output_dir=output_dir,
-            files=files,
-            recurse=recurse,
-            lines_text=lines_text,
-            lines_file=lines_file,
+            input_plan=plan,
             direct_mode=direct_mode,
+            move_mode=move_mode,
             shared=shared,
         )
     finally:
