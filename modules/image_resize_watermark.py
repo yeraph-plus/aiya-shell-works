@@ -10,6 +10,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 if TYPE_CHECKING:
     from core.context import PipelineContext
+    from core.files import WorkspaceFile
     from core.runtime import PipelineRuntime
 
 MODULE_META = {
@@ -17,7 +18,8 @@ MODULE_META = {
     "name": "Image Resize & Watermark",
     "core_version": "2.0.0",
     "tags": ["image", "resize", "watermark"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
     "description": "Resize images to a maximum width and overlay text or image watermarks.",
 }
 
@@ -230,7 +232,7 @@ def _resolve_font(font_size: int) -> tuple[ImageFont.FreeTypeFont, str]:
     return ImageFont.load_default(), "PIL default"
 
 
-def _collect_targets(ctx: PipelineContext, runtime: PipelineRuntime) -> list[Path]:
+def _collect_targets(ctx: PipelineContext, runtime: PipelineRuntime) -> list[WorkspaceFile]:
     from core.tools import collect_file_targets
 
     targets = collect_file_targets(ctx, extensions=SUPPORTED_EXTENSIONS)
@@ -285,12 +287,6 @@ _OUTPUT_EXT_MAP: dict[str, str] = {
 }
 
 
-def _resolve_output_path(target: Path, output_format: str) -> Path:
-    if output_format == "keep":
-        return target
-    return target.with_suffix(_OUTPUT_EXT_MAP[output_format])
-
-
 def _needs_quality_param(ext: str) -> bool:
     return ext in (".jpg", ".jpeg", ".webp", ".avif")
 
@@ -326,14 +322,13 @@ def run(
         try:
             positions = _parse_positions(watermark_positions_str)
         except ValueError as e:
-            runtime.log(SLUG, "error", str(e))
-            return ctx
+            raise ValueError(str(e)) from e
 
         if _is_image_path(watermark_content):
             use_image_watermark = True
             runtime.log(
                 SLUG,
-                "info",
+                "message",
                 f"Using image watermark: {watermark_content}",
                 {"watermark_path": watermark_content},
             )
@@ -341,7 +336,7 @@ def run(
             font, font_desc = _resolve_font(watermark_font_size)
             runtime.log(
                 SLUG,
-                "info",
+                "message",
                 f"Using text watermark: {watermark_content!r} (font: {font_desc})",
                 {"font": font_desc},
             )
@@ -354,11 +349,12 @@ def run(
     )
 
     processed = 0
+    original_current = ctx.current.path
     for target in targets:
-        runtime.log(SLUG, "info", f"Processing: {target.name}")
-
+        runtime.log(SLUG, "message", f"Processing: {target.name}")
+        output_file = None
         try:
-            img = Image.open(target)
+            img = Image.open(target.path)
             img = ImageOps.exif_transpose(img)
 
             if max_width_in > 0 and max(img.width, img.height) > max_width_in:
@@ -396,31 +392,39 @@ def run(
                         )
                         img.paste(wm_layer, (x, y), wm_layer)
 
-            save_path = _resolve_output_path(target, output_format)
+            suffix = target.path.suffix if output_format == "keep" else _OUTPUT_EXT_MAP[output_format]
+            desired_name = target.path.with_suffix(suffix).name
+            output_file = ctx.allocate_file(desired_name)
 
             if output_format == "jpg":
                 if img.mode == "RGBA":
                     img = img.convert("RGB")
-                img.save(save_path, optimize=True, quality=quality)
+                img.save(output_file.path, optimize=True, quality=quality)
             elif output_format == "avif":
-                img.save(save_path, optimize=True, quality=quality)
+                img.save(output_file.path, optimize=True, quality=quality)
             else:
                 save_kwargs: dict[str, Any] = {"optimize": True}
-                target_ext = target.suffix.lower()
+                target_ext = target.path.suffix.lower()
                 if _needs_quality_param(target_ext):
                     save_kwargs["quality"] = quality
                     if img.mode == "RGBA":
                         img = img.convert("RGB")
-                img.save(save_path, **save_kwargs)
+                img.save(output_file.path, **save_kwargs)
 
-            if save_path != target:
-                target.unlink(missing_ok=True)
+            output_file = ctx.adopt(output_file.path)
+            replaces_current = target.path == original_current
+            target.delete()
+            if target.name == desired_name and output_file.name != desired_name:
+                output_file = output_file.rename(desired_name)
+            if replaces_current:
+                ctx.set_current(output_file.path)
 
             processed += 1
 
         except Exception:
-            runtime.log(SLUG, "error", f"Failed to process: {target.name}")
-            continue  # noqa: TC02 — intentionally continue to next file
+            if output_file is not None:
+                ctx.delete(output_file.path)
+            raise
 
     runtime.log(
         SLUG,

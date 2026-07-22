@@ -20,7 +20,8 @@ MODULE_META = {
     "description": "Count files inside the merged working tree and write a report.",
     "core_version": "2.0.0",
     "tags": ["example", "counter"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
     "scope": 0,
 }
 

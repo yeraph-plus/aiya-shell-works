@@ -14,7 +14,8 @@ MODULE_META = {
     "name": "递归提取文件",
     "core_version": "2.0.0",
     "tags": ["flatten", "organize"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
     "description": "递归移动子文件夹文件到根目录，按深度层级添加数字前缀辅助排序。",
 }
 
@@ -74,10 +75,9 @@ def _assign_children(
 
 
 def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
-    working_dir = Path(ctx.working_path)
-    if not working_dir.is_dir():
-        runtime.log("flatten-folder", "error", "working_path 不是目录。")
-        return ctx
+    if not ctx.current.is_dir:
+        raise ValueError("当前工作区资源不是目录")
+    working_dir = ctx.current.path
 
     subfolder_first = cfg.get("subfolder_first", True)
     separator = cfg.get("prefix_separator", "_")
@@ -85,8 +85,6 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
     prefix_map = _assign_prefixes(working_dir, subfolder_first)
 
     moved = 0
-    failed = 0
-
     for dir_path, prefix in prefix_map.items():
         for f in sorted(dir_path.iterdir()):
             if not f.is_file():
@@ -94,24 +92,8 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
             new_name = f"{prefix}{separator}{f.name}"
             target = working_dir / new_name
 
-            collision = 1
-            while target.exists():
-                stem = f.stem
-                suffix = f.suffix
-                new_name = f"{prefix}{separator}{stem} ({collision}){suffix}"
-                target = working_dir / new_name
-                collision += 1
-
-            try:
-                f.rename(target)
-                moved += 1
-            except OSError as e:
-                failed += 1
-                runtime.log(
-                    "flatten-folder",
-                    "error",
-                    f"移动失败: {f.name} ({e})",
-                )
+            ctx.move(f, target)
+            moved += 1
 
     subdirs = sorted(
         [d for d in working_dir.rglob("*") if d.is_dir() and d != working_dir],
@@ -119,19 +101,17 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
     )
 
     removed_dirs = 0
-    for d in subdirs:
-        try:
-            d.rmdir()
+    for directory in subdirs:
+        if not any(directory.iterdir()):
+            ctx.delete(directory)
             removed_dirs += 1
-        except OSError:
-            pass
 
     if moved > 0:
         runtime.log(
             "flatten-folder",
             "message",
-            f"提取完成: {moved} 个文件已移至根目录, {failed} 个失败, 已清理 {removed_dirs} 个空子目录。",
-            {"moved": moved, "failed": failed, "removed_dirs": removed_dirs},
+            f"提取完成: {moved} 个文件已移至根目录, 已清理 {removed_dirs} 个空子目录。",
+            {"moved": moved, "removed_dirs": removed_dirs},
         )
     else:
         runtime.log("flatten-folder", "message", "未发现需要提取的文件。")

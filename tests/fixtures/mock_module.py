@@ -18,7 +18,8 @@ MODULE_META = {
     "name": "Mock Probe",
     "core_version": "2.0.0",
     "tags": ["-test"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
 }
 
 CONFIG_SCHEMA = {
@@ -51,7 +52,8 @@ EVENT_PROBE_META = {
     "name": "Event Probe",
     "core_version": "2.0.0",
     "tags": ["-test"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
 }
 
 EVENT_PROBE_SCHEMA = {

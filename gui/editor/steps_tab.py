@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -18,14 +19,13 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
-    QFormLayout,
     QVBoxLayout,
     QWidget,
 )
 
-from core import ModuleDefinition, ModuleManager
-from gui.widgets.dynamic_form import DynamicParameterForm
+from core import ModuleDefinition, ModuleManager, current_platform
 from gui.editor.state import WorkflowDraft, filter_modules
+from gui.widgets.dynamic_form import DynamicParameterForm
 
 if TYPE_CHECKING:
     pass
@@ -140,19 +140,21 @@ class StepsTab(QWidget):
         self.available_modules_list.clear()
         if self._draft is None:
             return
-        atom = self._draft.atom
-        expected_is_file_module = atom in {"file", "folder"} if atom else None
         for module_definition in filter_modules(
             self.modules,
             active_tags=None,
-            expected_is_file_module=expected_is_file_module,
         ):
             name = str(module_definition.module_meta.get("name", module_definition.slug))
             tag_text = "  ".join(f"[{t}]" for t in module_definition.tags)
-            display = f"{name}  {tag_text}" if tag_text else name
+            platform_text = ""
+            if not module_definition.supports_platform():
+                platform_text = f"  [当前 {current_platform()} 不可用]"
+            display = f"{name}  {tag_text}{platform_text}" if tag_text else f"{name}{platform_text}"
             item = QListWidgetItem(display)
             item.setData(Qt.UserRole, module_definition.slug)
-            item.setToolTip(str(module_definition.module_meta.get("description", module_definition.slug)))
+            platforms = "all" if module_definition.platforms is None else ", ".join(module_definition.platforms)
+            description = str(module_definition.module_meta.get("description", module_definition.slug))
+            item.setToolTip(f"{description}\naccess={module_definition.access}; platforms={platforms}")
             self.available_modules_list.addItem(item)
 
     # ------------------------------------------------------------------
@@ -205,7 +207,7 @@ class StepsTab(QWidget):
         index = self.steps_list.currentRow()
         if index < 0:
             return
-        removed = self._draft.remove_step(index)
+        self._draft.remove_step(index)
         next_index = min(index, len(self._draft.steps) - 1)
         self._refresh_steps(selected_index=next_index if next_index >= 0 else None)
         self.dirty_changed.emit()
@@ -247,8 +249,13 @@ class StepsTab(QWidget):
             self.step_description_label.setText("该步骤引用的模块当前不可用。")
             self.parameter_form.set_schema({}, {})
             return
+        description = str(module_definition.module_meta.get("description", "")) or "该模块未提供额外说明。"
+        platforms = "all" if module_definition.platforms is None else ", ".join(module_definition.platforms)
+        availability = ""
+        if not module_definition.supports_platform():
+            availability = f"；当前 {current_platform()} 将跳过此步骤"
         self.step_description_label.setText(
-            str(module_definition.module_meta.get("description", "")) or "该模块未提供额外说明。"
+            f"{description}\naccess={module_definition.access}；platforms={platforms}{availability}"
         )
         self.parameter_form.set_schema(module_definition.config_schema, dict(step.params))
 

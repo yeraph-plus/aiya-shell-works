@@ -1,4 +1,4 @@
-"""Module manager: scans modules dir, enforces is_file_module / scope meta."""
+"""Module manager: scans modules and validates their public contract."""
 
 from __future__ import annotations
 
@@ -25,7 +25,8 @@ VALID_MODULE = """MODULE_META = {
     "name": "Demo",
     "core_version": "2.0.0",
     "tags": ["a", "b"],
-    "is_file_module": True,
+    "access": "read",
+    "platforms": None,
 }
 CONFIG_SCHEMA = {"type": "object", "properties": {}}
 
@@ -40,7 +41,8 @@ def test_valid_module_is_cached(modules_dir: Path) -> None:
     modules = mgr.scan_modules()
     assert "demo" in modules
     mod = modules["demo"]
-    assert mod.is_file_module is True
+    assert mod.access == "read"
+    assert mod.platforms is None
     assert mod.scope == 1
     assert mod.tags == ("a", "b")
     assert mgr.warnings == []
@@ -65,25 +67,44 @@ def test_module_missing_meta_ignored(modules_dir: Path) -> None:
     assert any("MODULE_META" in w for w in mgr.warnings)
 
 
-def test_module_invalid_is_file_module_ignored(modules_dir: Path) -> None:
-    body = VALID_MODULE.replace('"is_file_module": True', '"is_file_module": "yes"')
-    _write(modules_dir, "bad_kind.py", body)
+def test_module_invalid_access_ignored(modules_dir: Path) -> None:
+    body = VALID_MODULE.replace('"access": "read"', '"access": "write"')
+    _write(modules_dir, "bad_access.py", body)
     modules = ModuleManager(modules_dir).scan_modules()
     assert "demo" not in modules
 
 
-def test_module_missing_is_file_module_ignored(modules_dir: Path) -> None:
-    body = VALID_MODULE.replace('    "is_file_module": True,\n', "")
-    _write(modules_dir, "no_kind.py", body)
+def test_module_unhashable_access_ignored(modules_dir: Path) -> None:
+    body = VALID_MODULE.replace('"access": "read"', '"access": []')
+    _write(modules_dir, "bad_access.py", body)
+    manager = ModuleManager(modules_dir)
+
+    assert "demo" not in manager.scan_modules()
+    assert any("MODULE_META.access" in warning for warning in manager.warnings)
+
+
+def test_module_missing_access_defaults_to_read_write(modules_dir: Path) -> None:
+    body = VALID_MODULE.replace('    "access": "read",\n', "")
+    _write(modules_dir, "default_access.py", body)
+    module = ModuleManager(modules_dir).scan_modules()["demo"]
+    assert module.access == "read_write"
+
+
+def test_module_platforms_are_normalized(modules_dir: Path) -> None:
+    body = VALID_MODULE.replace('"platforms": None', '"platforms": ["windows", "linux"]')
+    _write(modules_dir, "platforms.py", body)
+    module = ModuleManager(modules_dir).scan_modules()["demo"]
+    assert module.platforms == ("windows", "linux")
+
+
+@pytest.mark.parametrize(
+    "value",
+    ['"windows"', "[]", '["plan9"]', '["linux", "linux"]'],
+)
+def test_module_invalid_platforms_ignored(modules_dir: Path, value: str) -> None:
+    body = VALID_MODULE.replace('"platforms": None', f'"platforms": {value}')
+    _write(modules_dir, "bad_platforms.py", body)
     assert "demo" not in ModuleManager(modules_dir).scan_modules()
-
-
-def test_module_line_kind_accepted(modules_dir: Path) -> None:
-    body = VALID_MODULE.replace('"is_file_module": True', '"is_file_module": False')
-    _write(modules_dir, "line_mod.py", body)
-    modules = ModuleManager(modules_dir).scan_modules()
-    assert "demo" in modules
-    assert modules["demo"].is_file_module is False
 
 
 def test_module_invalid_scope_ignored(modules_dir: Path) -> None:
@@ -110,6 +131,12 @@ def test_module_scope_missing_defaults_to_1(modules_dir: Path) -> None:
 def test_module_missing_run_ignored(modules_dir: Path) -> None:
     body = VALID_MODULE.split("\ndef run")[0]
     _write(modules_dir, "no_run.py", body)
+    assert "demo" not in ModuleManager(modules_dir).scan_modules()
+
+
+def test_module_invalid_run_signature_ignored(modules_dir: Path) -> None:
+    body = VALID_MODULE.replace("def run(ctx, cfg, runtime):", "def run(ctx, cfg):")
+    _write(modules_dir, "bad_signature.py", body)
     assert "demo" not in ModuleManager(modules_dir).scan_modules()
 
 

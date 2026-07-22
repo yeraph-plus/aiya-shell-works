@@ -2,7 +2,7 @@
 
 Each ``modules/<name>.py`` must expose three module-level objects:
 
-* ``MODULE_META: dict`` — slug, name, core_version, tags, atom, scope, …
+* ``MODULE_META: dict`` — slug, name, core_version, tags, access, platforms, scope, …
 * ``CONFIG_SCHEMA: dict`` — JSON-style schema for the GUI form / validator
 * ``run(ctx, cfg, runtime)`` — entry point called by the executor
 """
@@ -10,12 +10,14 @@ Each ``modules/<name>.py`` must expose three module-level objects:
 from __future__ import annotations
 
 import hashlib
+import inspect
 import logging
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Literal, cast
 
 from .config_schema import validate_config_schema
 from .context import PipelineContext
@@ -25,6 +27,19 @@ LOGGER = logging.getLogger(__name__)
 VALID_ATOMS = ("file", "folder", "line", "none")  # GUI metadata only — no kernel constraint
 # scope: 0 = shared, 1 = per-unit, >1 = fixed-size batch
 VALID_SCOPES = ">=0"
+ModuleAccess = Literal["read", "read_write"]
+VALID_MODULE_ACCESS = frozenset({"read", "read_write"})
+VALID_MODULE_PLATFORMS = frozenset({"windows", "linux", "darwin"})
+
+
+def current_platform() -> str:
+    if sys.platform.startswith("win"):
+        return "windows"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    if sys.platform == "darwin":
+        return "darwin"
+    return sys.platform
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,9 +54,13 @@ class ModuleDefinition:
     module: ModuleType
     core_version: str = "2.0.0"
     tags: tuple[str, ...] = ()
-    is_file_module: bool = True
+    access: ModuleAccess = "read_write"
+    platforms: tuple[str, ...] | None = None
     scope: int = 1
     parent: str | None = None
+
+    def supports_platform(self, platform: str | None = None) -> bool:
+        return self.platforms is None or (platform or current_platform()) in self.platforms
 
 
 class ModuleManager:
@@ -149,11 +168,27 @@ class ModuleManager:
             return None
         tags = tuple(t.strip() for t in raw_tags)
 
-        raw_is_file_module = meta.get("is_file_module")
-        if not isinstance(raw_is_file_module, bool):
-            self._warn(f"MODULE_META.is_file_module 必须是布尔值，已忽略: {path}")
+        raw_access = meta.get("access", "read_write")
+        if not isinstance(raw_access, str) or raw_access not in VALID_MODULE_ACCESS:
+            self._warn(f"MODULE_META.access 必须是 'read' 或 'read_write'，已忽略: {path}")
             return None
-        is_file_module = raw_is_file_module
+        access = cast(ModuleAccess, raw_access)
+
+        raw_platforms = meta.get("platforms")
+        platforms: tuple[str, ...] | None
+        if raw_platforms is None:
+            platforms = None
+        elif (
+            isinstance(raw_platforms, list)
+            and raw_platforms
+            and all(isinstance(item, str) and item in VALID_MODULE_PLATFORMS for item in raw_platforms)
+            and len(set(raw_platforms)) == len(raw_platforms)
+        ):
+            platforms = tuple(raw_platforms)
+        else:
+            supported = ", ".join(sorted(VALID_MODULE_PLATFORMS))
+            self._warn(f"MODULE_META.platforms 必须为 None 或不重复的非空列表 ({supported})，已忽略: {path}")
+            return None
 
         raw_scope = meta.get("scope", 1)
         if not isinstance(raw_scope, int) or raw_scope < 0:
@@ -181,6 +216,11 @@ class ModuleManager:
         if not callable(run):
             self._warn(f"模块缺少可调用的 run 入口，已忽略: {path}")
             return None
+        try:
+            inspect.signature(run).bind(object(), {}, object())
+        except (TypeError, ValueError) as exc:
+            self._warn(f"模块 run 入口必须接受 (ctx, cfg, runtime)，已忽略: {path} ({exc})")
+            return None
 
         return ModuleDefinition(
             slug=slug.strip(),
@@ -191,7 +231,8 @@ class ModuleManager:
             module=module,
             core_version=core_version.strip(),
             tags=tags,
-            is_file_module=is_file_module,
+            access=access,
+            platforms=platforms,
             scope=scope,
             parent=parent,
         )

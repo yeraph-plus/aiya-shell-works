@@ -26,7 +26,8 @@ MODULE_META = {
     "description": "Invoke an external CLI binary on each working file using resources/mock_tool.",
     "core_version": "2.0.0",
     "tags": ["example", "external"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
 }
 
 CONFIG_SCHEMA = {
@@ -63,21 +64,21 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
         runtime.log("verify-run-external-tool", "error", f"未找到外部工具: {tool}")
         raise FileNotFoundError(f"mock tool not found: {tool}")
 
-    if sys.platform != "win32":
-        try:
-            tool.chmod(0o755)
-        except OSError:
-            pass
-
-    cmd = [str(tool), str(ctx.current.path)]
+    cmd = (
+        [str(tool), str(ctx.current.path)]
+        if sys.platform == "win32"
+        else ["/bin/sh", str(tool), str(ctx.current.path)]
+    )
     runtime.log("verify-run-external-tool", "hint", f"spawn: {' '.join(cmd)}")
     result = runtime.spawn(cmd)
+    if not result.is_success:
+        raise RuntimeError(f"external tool returned exit code {result.exit_code}")
     sidecar_path = Path(f"{ctx.current.path}.done")
     if sidecar_path.exists():
         ctx.adopt(sidecar_path)
     runtime.log(
         "verify-run-external-tool",
-        "success" if result.is_success else "error",
+        "success",
         f"exit={result.exit_code} ({Path(cmd[0]).name})",
         {"exit_code": result.exit_code, "command": " ".join(cmd)},
     )

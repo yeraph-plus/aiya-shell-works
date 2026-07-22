@@ -5,11 +5,11 @@ All functions are pure Python — no PySide6 or GUI dependency.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .context import PipelineContext
+    from .files import WorkspaceFile
     from .runtime import PipelineRuntime
 
 
@@ -17,7 +17,7 @@ def collect_file_targets(
     context: PipelineContext,
     *,
     extensions: frozenset[str] | None = None,
-) -> list[Path]:
+) -> list[WorkspaceFile]:
     """Return files this module should process, derived from filesystem state.
 
     * the current resource is a file → that file (subject to ``extensions``)
@@ -28,12 +28,11 @@ def collect_file_targets(
     Modules no longer branch on ``ctx.atom``; the kernel derives behavior
     from filesystem state so the same module can run under any unit shape.
     """
-    entries = context.files(recursive=False)
-    files = [entry.path for entry in entries if entry.is_file]
-    if context.current.is_file and context.current.path not in files:
-        files.insert(0, context.current.path)
+    files = [entry for entry in context.files(recursive=False) if entry.is_file]
+    if context.current.is_file and all(entry.path != context.current.path for entry in files):
+        files.insert(0, context.current)
     if extensions is not None:
-        files = [path for path in files if path.suffix.lower() in extensions]
+        files = [entry for entry in files if entry.path.suffix.lower() in extensions]
     return files
 
 

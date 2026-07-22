@@ -27,7 +27,8 @@ MODULE_META = {
     "name": "Sched Touch",
     "core_version": "2.0.0",
     "tags": ["test"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
 }
 CONFIG_SCHEMA = {
     "type": "object",
@@ -41,7 +42,6 @@ def run(ctx, cfg, runtime):
     time.sleep(0.02)
     suffix = cfg["suffix"]
     renamed = ctx.current.rename(ctx.current.name + suffix)
-    ctx.workspace.current_path = renamed.path
     return ctx
 """
 
@@ -53,7 +53,8 @@ MODULE_META = {
     "name": "Sched None",
     "core_version": "2.0.0",
     "tags": ["test"],
-    "is_file_module": False,
+    "access": "read_write",
+    "platforms": None,
 }
 CONFIG_SCHEMA = {
     "type": "object",
@@ -75,7 +76,8 @@ MODULE_META = {
     "name": "Sched Count",
     "core_version": "2.0.0",
     "tags": ["test"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
     "scope": 0,
 }
 CONFIG_SCHEMA = {"type": "object", "properties": {}}

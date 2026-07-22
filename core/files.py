@@ -7,14 +7,18 @@ real directory because modules may pass its paths to external programs.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from shutil import copy2, copytree, move, rmtree
 from threading import RLock
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .exceptions import FileHandlingError
 from .input import InputPlan
+
+if TYPE_CHECKING:
+    from .context import PipelineContext
 
 
 def _unique_path(target: Path) -> Path:
@@ -86,7 +90,7 @@ def units_from_plan(plan: InputPlan) -> list[dict[str, Any]]:
 class WorkspaceFile:
     """A tracked file or directory in a :class:`UnitWorkspace`."""
 
-    workspace: "UnitWorkspace"
+    workspace: UnitWorkspace
     path: Path
 
     def __fspath__(self) -> str:
@@ -117,19 +121,19 @@ class WorkspaceFile:
     def read_bytes(self) -> bytes:
         return self.workspace.read_bytes(self.path)
 
-    def write_text(self, data: str, **kwargs: Any) -> "WorkspaceFile":
+    def write_text(self, data: str, **kwargs: Any) -> WorkspaceFile:
         return self.workspace.write_text(self.path, data, **kwargs)
 
-    def write_bytes(self, data: bytes) -> "WorkspaceFile":
+    def write_bytes(self, data: bytes) -> WorkspaceFile:
         return self.workspace.write_bytes(self.path, data)
 
-    def copy_to(self, target: str | Path) -> "WorkspaceFile":
+    def copy_to(self, target: str | Path) -> WorkspaceFile:
         return self.workspace.copy(self.path, target)
 
-    def move_to(self, target: str | Path) -> "WorkspaceFile":
+    def move_to(self, target: str | Path) -> WorkspaceFile:
         return self.workspace.move(self.path, target)
 
-    def rename(self, name: str) -> "WorkspaceFile":
+    def rename(self, name: str) -> WorkspaceFile:
         return self.workspace.rename(self.path, name)
 
     def delete(self) -> None:
@@ -144,10 +148,12 @@ class UnitWorkspace:
     root: Path
     current_path: Path
     owned_roots: set[Path] = field(default_factory=set)
+    referenced_roots: dict[Path, Path] = field(default_factory=dict)
     reserved_paths: set[Path] = field(default_factory=set, repr=False)
     allocation_lock: RLock = field(default_factory=RLock, repr=False)
     _entries: dict[Path, WorkspaceFile] = field(default_factory=dict, init=False, repr=False)
     _lock: RLock = field(default_factory=RLock, init=False, repr=False)
+    _module_access: str = field(default="read_write", init=False, repr=False)
 
     @property
     def current(self) -> WorkspaceFile:
@@ -158,6 +164,12 @@ class UnitWorkspace:
         root = self.root.resolve()
         if candidate.is_relative_to(root):
             return candidate.relative_to(root)
+        for referenced, alias in self.referenced_roots.items():
+            referenced = referenced.resolve(strict=False)
+            if candidate == referenced:
+                return alias
+            if candidate.is_relative_to(referenced):
+                return alias / candidate.relative_to(referenced)
         for owned in self._external_roots():
             if candidate == owned:
                 return Path(owned.name)
@@ -173,24 +185,42 @@ class UnitWorkspace:
         if candidate.is_relative_to(self.root.resolve()):
             return candidate
         for owned in self._external_roots():
-            boundary = owned if owned.is_dir() else owned.parent
-            if candidate.is_relative_to(boundary):
+            if candidate == owned or (owned.is_dir() and candidate.is_relative_to(owned)):
                 return candidate
         raise FileHandlingError(f"路径越界: {path}")
 
     def _external_roots(self) -> list[Path]:
         root = self.root.resolve()
-        return [
+        owned = [
             owned.resolve(strict=False)
             for owned in self.owned_roots
             if not owned.resolve(strict=False).is_relative_to(root)
         ]
+        referenced = [path.resolve(strict=False) for path in self.referenced_roots]
+        return list(dict.fromkeys([*owned, *referenced]))
 
     def _ensure_mutable(self, path: str | Path) -> Path:
         candidate = self._ensure_inside(path)
+        if self._module_access == "read":
+            raise FileHandlingError("只读模块不能修改工作区")
+        if any(
+            candidate == referenced.resolve(strict=False)
+            or candidate.is_relative_to(referenced.resolve(strict=False))
+            for referenced in self.referenced_roots
+        ):
+            raise FileHandlingError(f"只读引用不能修改: {candidate}")
         if candidate == self.root.resolve():
             raise FileHandlingError("不能修改工作区根目录")
         return candidate
+
+    @contextmanager
+    def module_access(self, access: str):
+        previous = self._module_access
+        self._module_access = access
+        try:
+            yield
+        finally:
+            self._module_access = previous
 
     def _is_owned(self, path: Path) -> bool:
         candidate = path.resolve(strict=False)
@@ -239,6 +269,13 @@ class UnitWorkspace:
         candidate = path.resolve(strict=False)
         self.owned_roots = {owned for owned in self.owned_roots if owned.resolve(strict=False) != candidate}
 
+    def _register_reference(self, path: Path, relative: Path) -> None:
+        candidate = path.resolve(strict=False)
+        requested = self.root / relative
+        reserved = {self.root / alias for alias in self.referenced_roots.values()}
+        alias = _unique_path_with_reservations(requested, reserved).relative_to(self.root)
+        self.referenced_roots[candidate] = alias
+
     @staticmethod
     def _validate_name(name: str) -> str:
         candidate = Path(name)
@@ -259,16 +296,24 @@ class UnitWorkspace:
             self._entries[resolved] = entry
         return entry
 
+    def set_current(self, path: str | Path) -> WorkspaceFile:
+        resolved = self._ensure_inside(path)
+        if not resolved.exists() and not resolved.is_symlink():
+            raise FileHandlingError(f"当前资源不存在: {resolved}")
+        self.current_path = resolved
+        return self.file(resolved)
+
     def refresh(self) -> None:
         with self._lock:
             self._entries = {}
-            for owned in list(self.owned_roots):
-                if not owned.exists() and not owned.is_symlink():
+            roots = list(self.owned_roots) + list(self.referenced_roots)
+            for tracked in roots:
+                if not tracked.exists() and not tracked.is_symlink():
                     continue
-                resolved = owned.resolve(strict=False)
+                resolved = tracked.resolve(strict=False)
                 self._entries[resolved] = WorkspaceFile(self, resolved)
-                if owned.is_dir():
-                    for item in owned.rglob("*"):
+                if tracked.is_dir():
+                    for item in tracked.rglob("*"):
                         resolved_item = item.resolve(strict=False)
                         self._entries[resolved_item] = WorkspaceFile(self, resolved_item)
 
@@ -276,7 +321,9 @@ class UnitWorkspace:
         self.refresh()
         items = list(self._entries.values())
         if not recursive:
-            if self.current_path.is_file():
+            if self.current_path.resolve(strict=False) == self.root.resolve():
+                items = [entry for entry in items if len(entry.relative_path.parts) == 1]
+            elif self.current_path.is_file():
                 items = [entry for entry in items if entry.path == self.current_path]
             else:
                 items = [entry for entry in items if entry.path.parent == self.current_path]
@@ -464,9 +511,10 @@ class ExecutionWorkspace:
         *,
         direct_mode: bool = False,
         move_mode: bool = False,
+        reference_mode: bool = False,
         shared: Mapping[str, Any] | None = None,
         unit_workspace: UnitWorkspace | None = None,
-    ) -> "PipelineContext":
+    ) -> PipelineContext:
         from .context import PipelineContext
 
         workspace = unit_workspace or self.create_unit(index)
@@ -487,7 +535,7 @@ class ExecutionWorkspace:
         if direct_mode and is_batched:
             raise FileHandlingError("scope>1 与 direct_mode 不兼容：批次需要独立工作区。")
 
-        if is_batched:
+        if is_batched and not reference_mode:
             with self._lock:
                 batch_root = _unique_path_with_reservations(
                     self.root / f"_batch_{index:04d}",
@@ -514,6 +562,18 @@ class ExecutionWorkspace:
                 raise FileHandlingError(f"输入路径不存在: {source}")
             if direct_mode:
                 destination = source
+            elif reference_mode:
+                source_root = Path(item["source_root"]) if item.get("source_root") else None
+                if source_root is not None:
+                    source_root = source_root.resolve()
+                    try:
+                        relative = source.relative_to(source_root)
+                    except ValueError as exc:
+                        raise FileHandlingError(f"文件 {source} 不在 source_root {source_root} 内") from exc
+                else:
+                    relative = Path(source.name)
+                destination = source
+                workspace._register_reference(source, relative)
             else:
                 source_root = Path(item["source_root"]) if item.get("source_root") else None
                 if source_root is not None:
@@ -539,7 +599,8 @@ class ExecutionWorkspace:
                         if not move_mode:
                             self.discard(workspace)
                         raise FileHandlingError(f"输入导入失败: {source}") from exc
-            workspace._register_owned(destination)
+            if not reference_mode:
+                workspace._register_owned(destination)
             if first is None:
                 first = destination
                 original_source = source
@@ -570,13 +631,14 @@ class ExecutionWorkspace:
             else:
                 root.unlink(missing_ok=True)
         unit.owned_roots.clear()
+        unit.referenced_roots.clear()
         unit.refresh()
 
     def close(self) -> None:
         # Output is the workspace; never remove user-visible results.
         return None
 
-    def __enter__(self) -> "ExecutionWorkspace":
+    def __enter__(self) -> ExecutionWorkspace:
         return self
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:

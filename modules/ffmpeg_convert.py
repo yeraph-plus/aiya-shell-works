@@ -1,4 +1,4 @@
-"""使用 FFmpeg 对媒体文件进行转码、格式转换、编码参数调整。"""
+"""仅 Windows 工作，使用 FFmpeg 对媒体文件进行转码、格式转换、编码参数调整。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ MODULE_META = {
     "name": "FFmpeg 转码",
     "core_version": "2.0.0",
     "tags": ["ffmpeg", "convert", "video", "audio"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": ["windows"],
     "description": "使用 FFmpeg 转换媒体文件格式、调整编码参数、分辨率、帧率与像素格式，支持硬件加速编码。",
 }
 
@@ -249,29 +250,6 @@ def _resolve_ffmpeg_path(cfg: dict) -> str | None:
     return None
 
 
-def _collect_targets(ctx: PipelineContext) -> list[Path]:
-    wp = Path(ctx.working_path)
-    if wp.is_file():
-        return [wp] if wp.suffix.lower() in _SUPPORTED_EXTENSIONS else []
-    if wp.is_dir():
-        return sorted(f for f in wp.iterdir() if f.is_file() and f.suffix.lower() in _SUPPORTED_EXTENSIONS)
-    return []
-
-
-def _output_path(input_file: Path, output_dir: Path, output_format: str) -> Path:
-    ext = output_format if output_format.startswith(".") else f".{output_format}"
-    stem = input_file.stem
-    candidate = output_dir / f"{stem}{ext}"
-    if not candidate.exists():
-        return candidate
-    counter = 1
-    while True:
-        candidate = output_dir / f"{stem}_{counter}{ext}"
-        if not candidate.exists():
-            return candidate
-        counter += 1
-
-
 def _build_command(
     input_file: Path,
     output_file: Path,
@@ -334,28 +312,26 @@ def _build_command(
 
 
 def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
-    targets = _collect_targets(ctx)
+    targets = [
+        entry for entry in ctx.files(recursive=False) if entry.path.suffix.lower() in _SUPPORTED_EXTENSIONS
+    ]
     if not targets:
         runtime.log("ffmpeg-convert", "message", "未发现支持的媒体文件，跳过。")
         return ctx
 
     ffmpeg = _resolve_ffmpeg_path(cfg)
     if ffmpeg is None:
-        runtime.log(
-            "ffmpeg-convert",
-            "error",
+        raise FileNotFoundError(
             "FFmpeg 未找到，请配置路径或将 ffmpeg.exe 放置到 resources/ffmpeg/ 下，或在工作流配置中指定 ffmpeg.exe 位置。",  # noqa: E501
         )
-        return ctx
 
     output_format = cfg.get("output_format", "mp4")
-    output_dir = Path(ctx.output_dir)
     succeeded = 0
-    failed = 0
 
     for target in targets:
-        output_file = _output_path(target, output_dir, output_format)
-        cmd = _build_command(target, output_file, cfg)
+        extension = output_format if output_format.startswith(".") else f".{output_format}"
+        output_file = ctx.allocate_file(f"{target.path.stem}{extension}")
+        cmd = [ffmpeg, *_build_command(target.path, output_file.path, cfg)]
 
         runtime.log(
             "ffmpeg-convert",
@@ -370,40 +346,28 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
 
         try:
             result = runtime.spawn(cmd)
-        except OSError as e:
-            runtime.log("ffmpeg-convert", "error", f"FFmpeg 启动失败: {e}")
-            failed += 1
-            continue
+        except Exception:
+            ctx.delete(output_file.path)
+            raise
 
         if result.is_success:
-            ctx.track_extra_file(output_file)
+            ctx.adopt(output_file.path)
             succeeded += 1
             runtime.log(
                 "ffmpeg-convert",
                 "success",
                 f"转码完成: {output_file.name}",
-                {"output_file": str(output_file)},
+                {"output_file": str(output_file.path)},
             )
         else:
-            failed += 1
-            runtime.log(
-                "ffmpeg-convert",
-                "error",
-                f"FFmpeg 返回非零退出码: {result.exit_code} — {target.name}",
-            )
+            ctx.delete(output_file.path)
+            raise RuntimeError(f"FFmpeg 返回非零退出码: {result.exit_code} — {target.name}")
 
     runtime.log(
         "ffmpeg-convert",
         "message",
-        f"转码批次完成: {succeeded} 成功, {failed} 失败 (共 {len(targets)} 个文件)。",
-        {"succeeded": succeeded, "failed": failed, "total": len(targets)},
+        f"转码批次完成: {succeeded} 成功 (共 {len(targets)} 个文件)。",
+        {"succeeded": succeeded, "total": len(targets)},
     )
-
-    if failed > 0 and succeeded == 0:
-        runtime.log(
-            "ffmpeg-convert",
-            "error",
-            "所有文件转码均失败。",
-        )
 
     return ctx

@@ -10,7 +10,7 @@ flowchart LR
     D --> E
     E --> F{scope?}
     F -->|1: per-unit| G["单元 A, B, C …<br/>每单元独立上下文"]
-    F -->|0: shared| H["合并树 → 单上下文<br/>一次执行"]
+    F -->|0: shared| H["合并树/只读引用 → 单上下文<br/>一次执行"]
     G --> I[run step₁ → step₂ → …]
     H --> I
     I --> J[📦 output_dir]
@@ -21,7 +21,7 @@ flowchart LR
 ## 安装
 
 ```bash
-pip install .                        # 内核 + CLI（仅 PyYAML）
+pip install .                        # 内核 + CLI
 pip install ".[gui]"                 # + PySide6 桌面 GUI
 pip install ".[win]"                 # + pywinpty（Windows PTY）
 ```
@@ -66,14 +66,14 @@ python main.py example-external-tool.yaml \
 
 ## 核心模型
 
-内核**根据实际输入自动推导执行形状**。CLI 按 `--files` 优先、`--lines` 次之、皆空即"无输入"识别输入模式。`--files` 支持 `*`、`?`、`[]`、`**`，未匹配模式直接报错。scope（YAML 字段）决定多少个输入共享一个上下文；recurse（CLI 参数）控制目录展开。YAML 中的 `atom` 字段为可选 GUI 元数据，仅用于桌面端输入面板选择与编辑器模块过滤，内核不读它做执行判断。
+内核**根据实际输入自动推导执行形状**。CLI 按 `--files` 优先、`--lines` 次之、皆空即"无输入"识别输入模式。`--files` 支持 `*`、`?`、`[]`、`**`，未匹配模式直接报错。scope（YAML 字段）决定多少个输入共享一个上下文；recurse（CLI 参数）控制目录展开。YAML 中的 `atom` 字段为可选 GUI 元数据，仅用于桌面端输入面板选择，内核不读它做执行判断。
 
-最终 `output_dir` 同时是执行工作区。内核只把当前 unit 的条目加入清单，旧文件不会进入 `ctx.files()`；输入导入、创建和重命名遇到顶层冲突时整体改名为 `name (1)`，不会合并、删除或覆盖已有条目。输入目录与输出目录互相嵌套时会在导入前拒绝执行。
+最终 `output_dir` 同时是产物工作区。存在 `access=read_write` 的有效步骤时，输入按原有规则导入；全部有效步骤均为 `access=read` 时，scope 0/1/N 都通过只读引用清单访问原始输入，不执行启动复制。`--direct` 与 watch MOVE 是显式模式，优先于只读优化。输入导入、创建和重命名遇到顶层冲突时整体改名为 `name (1)`，不会覆盖已有条目。
 
 | 参数 | 说明 | 值 | 定义位置 |
 |------|------|-----|----------|
 | 输入来源 | CLI 决定输入粒度 | `--files`（路径）、`--lines`（文本行）、无（空输入） | CLI |
-| scope | 上下文分发策略 | `0`（shared，合并单任务）、`1`（per-unit，独立执行） | YAML |
+| scope | 上下文分发策略 | `0`（shared）、`1`（per-unit）、`N > 1`（batched） | YAML |
 | recurse | 目录展开 | `true`（递归展开文件）、`false`（整体单元） | CLI |
 
 ```mermaid
@@ -95,7 +95,7 @@ flowchart TD
     NUNIT --> SCOPE
 
     SCOPE -->|1: per-unit| ISOLATED["独立的 ctx + EventBus<br/>单元间无上下文泄漏"]
-    SCOPE -->|0: shared| SHARED["合并树 → 单 ctx<br/>运行一次"]
+    SCOPE -->|0: shared| SHARED["合并树/只读引用 → 单 ctx<br/>运行一次"]
 
     ISOLATED --> STEPS["step₁.run(ctx,cfg,rt)<br/>step₂.run(ctx,cfg,rt)<br/>..."]
     SHARED --> STEPS
@@ -172,9 +172,11 @@ steps:
 
 `resources/` 为外部二进制程序目录，提供给模块调用，在子会话中工作。
 
-模块通过 `ctx.current` 获取当前资源，通过 `ctx.files()` 获取递归文件清单，并使用 `ctx.create_file()` 或 `WorkspaceFile` 的读写、复制、移动、重命名和删除方法。外部程序创建新产物时先调用 `ctx.allocate_file()` 取得合法且不冲突的 `WorkspaceFile.path`；由工具自行派生的产物通过 `ctx.adopt()` 加入清单，executor 会在步骤边界刷新。致命错误必须抛异常，`runtime.log(..., "error", ...)` 仅记录诊断信息，不会让工作流失败。
+模块通过 `ctx.current` 获取当前资源，通过 `ctx.files()` 获取递归文件清单，并使用 `ctx.create_file()` 或 `WorkspaceFile` 的读写、复制、移动、重命名和删除方法。模块以新产物替换单文件输入时可用 `ctx.set_current()` 将其交给下游步骤。外部程序创建新产物时先调用 `ctx.allocate_file()` 取得合法且不冲突的 `WorkspaceFile.path`；由工具自行派生的产物通过 `ctx.adopt()` 加入清单，executor 会在步骤边界刷新。致命错误必须抛异常，`runtime.log(..., "error", ...)` 仅记录诊断信息，不会让工作流失败。
 
-当前仓库中的 `verify_*` 与 `cycle-counter` 示例使用该接口。图集、FFmpeg、压缩和解档等业务模块仍需迁移后才能在这一内核契约下运行。
+`MODULE_META.access` 使用 `read` 或 `read_write`；缺省为保守的 `read_write`。`MODULE_META.platforms` 为 `None` 或 `windows/linux/darwin` 列表。不兼容步骤会记录 skipped warning 并继续执行后续步骤；其参数只在支持的平台上校验。GUI 显示全部模块，并标注当前平台不可用的模块。
+
+`CONFIG_SCHEMA` 保持 JSON-Schema 风格根结构：`type: object`、`properties` 与可选 `required`。内核据此校验工作流参数，GUI 使用同一结构生成输入控件。
 
 外部命令可用阻塞式 `runtime.spawn()`，或用 `runtime.start()` 获取支持 `wait()`、`write()`、`terminate()` 的实时会话。命令参数列表直接执行；显式 `shell=True` 时 Windows 使用 `cmd.exe`，Linux/macOS 使用 `/bin/sh -lc`。
 

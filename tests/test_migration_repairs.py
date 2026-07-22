@@ -21,7 +21,8 @@ MODULE_META = {
     "name": "Repair Fixture",
     "core_version": "2.0.0",
     "tags": ["test"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
 }
 CONFIG_SCHEMA = {
     "type": "object",

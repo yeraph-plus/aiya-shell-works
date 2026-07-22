@@ -34,7 +34,8 @@ MODULE_META = {
     "name": "Demo Rename",
     "core_version": "2.0.0",
     "tags": ["demo"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
 }
 
 CONFIG_SCHEMA = {
@@ -50,7 +51,6 @@ def run(ctx, cfg, runtime):
     new = old.rename(old.name + suffix)
     renames = list(ctx.shared.get("renames", []))
     renames.append({"from": str(old.path), "to": str(new.path)})
-    ctx.workspace.current_path = new.path
     return ctx.clone(shared={**ctx.shared, "renames": renames})
 """
 
@@ -62,7 +62,8 @@ MODULE_META = {
     "name": "Shared Count",
     "core_version": "2.0.0",
     "tags": ["demo"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
     "scope": 0,
     "parent": None,
 }
@@ -90,7 +91,8 @@ MODULE_META = {
     "name": "Demo Echo",
     "core_version": "2.0.0",
     "tags": ["demo"],
-    "is_file_module": False,
+    "access": "read_write",
+    "platforms": None,
 }
 
 CONFIG_SCHEMA = {
@@ -112,7 +114,8 @@ MODULE_META = {
     "name": "Demo Line Batch",
     "core_version": "2.0.0",
     "tags": ["demo"],
-    "is_file_module": False,
+    "access": "read_write",
+    "platforms": None,
     "scope": 2,
 }
 
@@ -136,7 +139,8 @@ MODULE_META = {
     "name": "Demo Path Batch",
     "core_version": "2.0.0",
     "tags": ["demo"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
     "scope": 2,
 }
 
@@ -160,7 +164,8 @@ MODULE_META = {
     "name": "Demo None",
     "core_version": "2.0.0",
     "tags": ["demo"],
-    "is_file_module": False,
+    "access": "read_write",
+    "platforms": None,
 }
 CONFIG_SCHEMA = {
     "type": "object",
@@ -181,13 +186,77 @@ MODULE_META = {
     "name": "Demo Synth",
     "core_version": "2.0.0",
     "tags": ["demo"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
 }
 CONFIG_SCHEMA = {"type": "object", "properties": {}}
 
 def run(ctx, cfg, runtime):
     runtime.log("demo-synth", "success", f"is_file={ctx.current.is_file} is_dir={ctx.current.is_dir}")
     return ctx
+"""
+
+READ_MODULE = """
+MODULE_META = {
+    "slug": "demo-read",
+    "name": "Demo Read",
+    "core_version": "2.0.0",
+    "tags": ["demo"],
+    "access": "read",
+    "platforms": None,
+}
+CONFIG_SCHEMA = {"type": "object", "properties": {}}
+
+def run(ctx, cfg, runtime):
+    files = ctx.files()
+    if not files:
+        raise RuntimeError("no readable files")
+    runtime.log(
+        "demo-read",
+        "message",
+        "read-only",
+        {
+            "names": [entry.name for entry in files],
+            "relative": [str(entry.relative_path) for entry in files],
+            "contents": [entry.read_text(encoding="utf-8") for entry in files],
+        },
+    )
+    ctx.shared["read_count"] = len(files)
+    return ctx
+"""
+
+READ_VIOLATION_MODULE = """
+MODULE_META = {
+    "slug": "read-violation",
+    "name": "Read Violation",
+    "core_version": "2.0.0",
+    "tags": ["demo"],
+    "access": "read",
+    "platforms": None,
+}
+CONFIG_SCHEMA = {"type": "object", "properties": {}}
+
+def run(ctx, cfg, runtime):
+    ctx.create_file("forbidden.txt", "bad")
+    return ctx
+"""
+
+WINDOWS_ONLY_MODULE = """
+MODULE_META = {
+    "slug": "windows-only",
+    "name": "Windows Only",
+    "core_version": "2.0.0",
+    "tags": ["demo"],
+    "access": "read_write",
+    "platforms": ["windows"],
+}
+CONFIG_SCHEMA = {
+    "type": "object",
+    "properties": {"required_path": {"type": "str", "required": True}},
+}
+
+def run(ctx, cfg, runtime):
+    raise RuntimeError("unsupported module must not run")
 """
 
 
@@ -202,6 +271,9 @@ def modules_dir(tmp_path: Path) -> Path:
     (d / "path_batch.py").write_text(PATH_BATCH_MODULE, encoding="utf-8")
     (d / "none.py").write_text(NONE_MODULE, encoding="utf-8")
     (d / "synth.py").write_text(SYNTHESIS_MODULE, encoding="utf-8")
+    (d / "read.py").write_text(READ_MODULE, encoding="utf-8")
+    (d / "read_violation.py").write_text(READ_VIOLATION_MODULE, encoding="utf-8")
+    (d / "windows_only.py").write_text(WINDOWS_ONLY_MODULE, encoding="utf-8")
     return d
 
 
@@ -373,6 +445,158 @@ def test_shared_direct_mode_rejected(modules_dir: Path, tmp_path: Path) -> None:
     assert "FileHandlingError" in summary["errors"][0]["type"]
 
 
+@pytest.mark.parametrize("scope", [0, 1, 2])
+def test_read_only_path_workflow_references_inputs_without_copy(
+    modules_dir: Path,
+    tmp_path: Path,
+    scope: int,
+) -> None:
+    out = tmp_path / "out"
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    first = first_dir / "same.txt"
+    second = second_dir / "same.txt"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    _make_wf(
+        tmp_path / "workflows",
+        "read.yaml",
+        atom="file",
+        scope=scope,
+        recurse=False,
+        steps=[{"module": "demo-read", "params": {}}],
+    )
+    runtime = PipelineRuntime()
+
+    summary = PipelineExecutor(ModuleManager(modules_dir), runtime=runtime).execute(
+        WorkflowLoader(tmp_path / "workflows").load("read.yaml"),
+        output_dir=out,
+        files=[first, second],
+    )
+
+    assert summary["success"]
+    assert first.read_text(encoding="utf-8") == "first"
+    assert second.read_text(encoding="utf-8") == "second"
+    assert list(out.iterdir()) == []
+    if scope == 0:
+        event = next(event for event in runtime.bus.iterate() if event.slug == "demo-read" and event.data)
+        assert event.data["relative"] == ["same (1).txt", "same.txt"]
+
+
+def test_read_only_module_cannot_call_workspace_mutations(modules_dir: Path, tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    source.write_text("source", encoding="utf-8")
+    _make_wf(
+        tmp_path / "workflows",
+        "read.yaml",
+        atom="file",
+        scope=1,
+        recurse=False,
+        steps=[{"module": "read-violation", "params": {}}],
+    )
+
+    summary = PipelineExecutor(ModuleManager(modules_dir)).execute(
+        WorkflowLoader(tmp_path / "workflows").load("read.yaml"),
+        output_dir=tmp_path / "out",
+        files=[source],
+    )
+
+    assert not summary["success"]
+    assert source.read_text(encoding="utf-8") == "source"
+    assert not (tmp_path / "out" / "forbidden.txt").exists()
+    assert "只读模块" in summary["errors"][0]["error"]
+
+
+def test_read_write_step_keeps_startup_copy(modules_dir: Path, tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    source.write_text("source", encoding="utf-8")
+    _make_wf(
+        tmp_path / "workflows",
+        "mixed.yaml",
+        atom="file",
+        scope=1,
+        recurse=False,
+        steps=[
+            {"module": "demo-read", "params": {}},
+            {"module": "demo-rename", "params": {"suffix": "_done"}},
+        ],
+    )
+
+    summary = PipelineExecutor(ModuleManager(modules_dir)).execute(
+        WorkflowLoader(tmp_path / "workflows").load("mixed.yaml"),
+        output_dir=tmp_path / "out",
+        files=[source],
+    )
+
+    assert summary["success"]
+    assert source.read_text(encoding="utf-8") == "source"
+    assert (tmp_path / "out" / "source.txt_done").exists()
+
+
+def test_unsupported_platform_step_skips_params_and_execution(
+    modules_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("core.module_manager.current_platform", lambda: "linux")
+    monkeypatch.setattr("core.executor.current_platform", lambda: "linux")
+    source = tmp_path / "source.txt"
+    source.write_text("source", encoding="utf-8")
+    _make_wf(
+        tmp_path / "workflows",
+        "platform.yaml",
+        atom="file",
+        scope=1,
+        recurse=False,
+        steps=[
+            {"module": "windows-only", "params": {"required_path": 123}},
+            {"module": "demo-rename", "params": {"suffix": "_done"}},
+        ],
+    )
+    runtime = PipelineRuntime()
+
+    summary = PipelineExecutor(ModuleManager(modules_dir), runtime=runtime).execute(
+        WorkflowLoader(tmp_path / "workflows").load("platform.yaml"),
+        output_dir=tmp_path / "out",
+        files=[source],
+    )
+
+    assert summary["success"]
+    assert (tmp_path / "out" / "source.txt_done").exists()
+    skipped = [event for event in runtime.bus.iterate() if event.data.get("status") == "skipped"]
+    assert len(skipped) == 1
+    assert skipped[0].data["platform"] == "linux"
+
+
+def test_skipped_writer_does_not_trigger_input_copy(
+    modules_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("core.module_manager.current_platform", lambda: "linux")
+    source = tmp_path / "source.txt"
+    source.write_text("source", encoding="utf-8")
+    _make_wf(
+        tmp_path / "workflows",
+        "platform.yaml",
+        atom="file",
+        scope=1,
+        recurse=False,
+        steps=[{"module": "windows-only", "params": {}}],
+    )
+
+    summary = PipelineExecutor(ModuleManager(modules_dir)).execute(
+        WorkflowLoader(tmp_path / "workflows").load("platform.yaml"),
+        output_dir=tmp_path / "out",
+        files=[source],
+    )
+
+    assert summary["success"]
+    assert list((tmp_path / "out").iterdir()) == []
+
+
 # ---------------------------------------------------------------------------
 # atom=none: single empty unit
 # ---------------------------------------------------------------------------
@@ -516,7 +740,8 @@ MODULE_META = {
     "name": "Bad Return",
     "core_version": "2.0.0",
     "tags": ["demo"],
-    "is_file_module": False,
+    "access": "read_write",
+    "platforms": None,
 }
 CONFIG_SCHEMA = {"type": "object", "properties": {}}
 
@@ -530,7 +755,8 @@ MODULE_META = {
     "name": "None Return",
     "core_version": "2.0.0",
     "tags": ["demo"],
-    "is_file_module": False,
+    "access": "read_write",
+    "platforms": None,
 }
 CONFIG_SCHEMA = {"type": "object", "properties": {}}
 
@@ -637,7 +863,8 @@ MODULE_META = {
     "name": "Demo Summary",
     "core_version": "2.0.0",
     "tags": ["demo"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
 }
 
 CONFIG_SCHEMA = {"type": "object", "properties": {}}
@@ -792,7 +1019,8 @@ MODULE_META = {
     "name": "Demo Folder",
     "core_version": "2.0.0",
     "tags": ["demo"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
 }
 CONFIG_SCHEMA = {"type": "object", "properties": {}}
 

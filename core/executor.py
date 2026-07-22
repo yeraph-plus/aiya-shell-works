@@ -1,18 +1,17 @@
 """Workflow executor: input-plan x scope x recurse driven unit dispatch.
 
-Single-threaded execution with per-unit event-bus isolation.  Scope values
-control how inputs are batched into tasks:
+Execution uses per-unit event-bus isolation and optional worker threads. Scope
+values control how inputs are batched into tasks:
 
 * ``scope=1`` (per-unit) — every listed file / folder / line is its own
   ctx.  Executor calls ``runtime.replace_bus()`` before each unit so
   each one's events never bleed into the next.
-* ``scope=0`` (shared)  — all inputs are merged into a single merged
-  working tree (see ``files.py``) and the workflow runs exactly once
-  over the merged output folder.  The module rglobs the working tree
-  itself.
+* ``scope=0`` (shared) — all inputs share one context. Read/write workflows
+  import a merged output tree; all-read workflows expose a reference manifest.
 * ``scope>1`` (batched) — inputs are sliced into fixed-size batches.  Each
   batch runs with its own fresh bus, matching ``scope=1`` isolation.  Path
-  batches get isolated worktrees; line batches are exposed via
+  read/write path batches get isolated worktrees; all-read path batches use
+  reference manifests; line batches are exposed via
   ``ctx.shared["input_lines"]``.
 
 Cancellation is checked at step boundaries.  Module return-value contract
@@ -41,7 +40,7 @@ from .exceptions import (
 )
 from .files import ExecutionWorkspace, UnitWorkspace, units_from_plan, validate_output_separation
 from .input import InputPlan, resolve_input
-from .module_manager import ModuleDefinition, ModuleManager
+from .module_manager import ModuleDefinition, ModuleManager, current_platform
 from .runtime import PipelineRuntime
 from .workflow_loader import WorkflowDefinition, WorkflowLoader
 
@@ -57,6 +56,7 @@ class PreparedStep:
     module_slug: str
     module_definition: ModuleDefinition
     params: dict[str, Any]
+    supported: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +75,18 @@ def prepare_steps(
         definition = modules.get(step.module)
         if definition is None:
             raise PipelineExecutionError(f"module not found: {step.module}")
+        if not definition.supports_platform():
+            prepared.append(
+                PreparedStep(
+                    index=idx,
+                    name=step.name or step.module,
+                    module_slug=step.module,
+                    module_definition=definition,
+                    params={},
+                    supported=False,
+                )
+            )
+            continue
         try:
             params = normalize_config_params(definition.config_schema, step.params)
         except ConfigValidationError as exc:
@@ -125,6 +137,7 @@ def prepare_context(
     shared: Mapping[str, Any] | None,
     direct_mode: bool = False,
     move_mode: bool = False,
+    reference_mode: bool = False,
     unit_workspace: UnitWorkspace | None = None,
 ) -> PipelineContext:
     """Build a ``PipelineContext`` for a unit."""
@@ -134,6 +147,7 @@ def prepare_context(
         plan,
         direct_mode=direct_mode,
         move_mode=move_mode,
+        reference_mode=reference_mode,
         shared=shared,
         unit_workspace=unit_workspace,
     )
@@ -209,6 +223,15 @@ class PipelineExecutor:
             validate_output_separation(list(plan.files), output_dir, strict=True)
 
         steps = self._prepare_steps(definition)
+        reference_mode = (
+            plan.kind == "path"
+            and not direct_mode
+            and not move_mode
+            and not any(
+                step.supported and step.module_definition.access == "read_write"
+                for step in steps
+            )
+        )
         units = build_units(definition, plan)
         total = len(units)
         errors: list[dict[str, Any]] = []
@@ -221,7 +244,8 @@ class PipelineExecutor:
             "message",
             f"start workflow: {definition.meta.name} "
             f"(scope={definition.scope}, recurse={definition.recurse}, units={total}, "
-            f"direct={direct_mode}, move={move_mode}, concurrency={self.concurrency})",
+            f"direct={direct_mode}, move={move_mode}, reference={reference_mode}, "
+            f"concurrency={self.concurrency})",
         )
         self._report_progress(0, total, None, "starting")
 
@@ -237,6 +261,7 @@ class PipelineExecutor:
                     workspace=workspace,
                     direct_mode=direct_mode,
                     move_mode=move_mode,
+                    reference_mode=reference_mode,
                     shared=shared,
                     results=results,
                     errors=errors,
@@ -250,6 +275,7 @@ class PipelineExecutor:
                     workspace=workspace,
                     direct_mode=direct_mode,
                     move_mode=move_mode,
+                    reference_mode=reference_mode,
                     shared=shared,
                     results=results,
                     errors=errors,
@@ -287,6 +313,7 @@ class PipelineExecutor:
         workspace: ExecutionWorkspace,
         direct_mode: bool,
         move_mode: bool,
+        reference_mode: bool,
         shared: Mapping[str, Any] | None,
         results: list[dict[str, Any]],
         errors: list[dict[str, Any]],
@@ -306,6 +333,7 @@ class PipelineExecutor:
                     workspace=workspace,
                     direct_mode=direct_mode,
                     move_mode=move_mode,
+                    reference_mode=reference_mode,
                     shared=shared,
                     runtime=self.runtime,
                     unit_index=idx,
@@ -338,6 +366,7 @@ class PipelineExecutor:
         workspace: ExecutionWorkspace,
         direct_mode: bool,
         move_mode: bool,
+        reference_mode: bool,
         shared: Mapping[str, Any] | None,
         results: list[dict[str, Any]],
         errors: list[dict[str, Any]],
@@ -359,6 +388,7 @@ class PipelineExecutor:
                     workspace=workspace,
                     direct_mode=direct_mode,
                     move_mode=move_mode,
+                    reference_mode=reference_mode,
                     shared=shared,
                     runtime=runtime,
                     unit_index=idx,
@@ -406,6 +436,7 @@ class PipelineExecutor:
         workspace: ExecutionWorkspace,
         direct_mode: bool,
         move_mode: bool,
+        reference_mode: bool,
         shared: Mapping[str, Any] | None,
         runtime: PipelineRuntime,
         unit_index: int,
@@ -420,6 +451,7 @@ class PipelineExecutor:
             shared=shared,
             direct_mode=direct_mode,
             move_mode=move_mode,
+            reference_mode=reference_mode,
             unit_workspace=unit_workspace,
         )
         return self._run_unit(
@@ -486,6 +518,19 @@ class PipelineExecutor:
 
         for step in steps:
             self._raise_if_cancelled(runtime)
+            if not step.supported:
+                supported = step.module_definition.platforms or ()
+                runtime.log(
+                    step.module_slug,
+                    "warning",
+                    f"skip step {step.index}/{len(steps)}: platform is not supported",
+                    {
+                        "status": "skipped",
+                        "platform": current_platform(),
+                        "supported_platforms": list(supported),
+                    },
+                )
+                continue
             runtime.log(
                 step.module_slug,
                 "message",
@@ -493,7 +538,8 @@ class PipelineExecutor:
             )
 
             try:
-                result = step.module_definition.run(current, dict(step.params), runtime)
+                with current.workspace.module_access(step.module_definition.access):
+                    result = step.module_definition.run(current, dict(step.params), runtime)
                 current = self._resolve_step_result(step_name=step.name, result=result, fallback=current)
                 current.refresh()
             except PipelineCancelledError:

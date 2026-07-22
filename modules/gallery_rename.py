@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -15,7 +14,8 @@ MODULE_META = {
     "name": "Gallery 重命名",
     "core_version": "2.0.0",
     "tags": ["rename", "gallery", "sort"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
     "description": "按文件类型分组建模重命名：jpg/png 无前缀，视频统一 VIDEO_ 队列，其余格式按自身后缀前缀。",
 }
 
@@ -51,21 +51,9 @@ def _natural_sort_key(name: str) -> list:
     return [int(p) if p.isdigit() else p.lower() for p in parts]
 
 
-def _collect_targets(ctx: PipelineContext) -> list[Path]:
-    wp = Path(ctx.working_path)
-    if not wp.is_dir():
-        return []
-    return sorted(
-        [f for f in wp.iterdir() if f.is_file()],
-        key=lambda f: f.name.lower(),
-    )
-
-
 def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
-    working_dir = Path(ctx.working_path)
-    if not working_dir.is_dir():
-        runtime.log("gallery-rename", "error", "working_path 不是目录。")
-        return ctx
+    if not ctx.current.is_dir:
+        raise ValueError("当前工作区资源不是目录")
 
     padding = cfg.get("padding", 3)
     video_str = cfg.get("video_extensions", "mp4 mov mkv wmv flv")
@@ -73,14 +61,14 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
     video_exts = {e.strip().lower() for e in video_str.split() if e.strip()}
     image_exts = {e.strip().lower() for e in image_str.split() if e.strip()}
 
-    files = _collect_targets(ctx)
+    files = sorted(ctx.files(recursive=False), key=lambda item: item.name.lower())
     if not files:
         runtime.log("gallery-rename", "hint", "无可重命名的文件。")
         return ctx
 
-    groups: dict[str, list[Path]] = {}
-    for f in files:
-        ext = f.suffix.lower().lstrip(".")
+    groups: dict[str, list[Any]] = {}
+    for file_entry in files:
+        ext = file_entry.path.suffix.lower().lstrip(".")
         if not ext:
             continue
         if ext in image_exts:
@@ -89,17 +77,15 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
             key = "VIDEO_"
         else:
             key = f"{ext.upper()}_"
-        groups.setdefault(key, []).append(f)
+        groups.setdefault(key, []).append(file_entry)
 
     renamed = 0
-    failed = 0
-
     for prefix, group_files in groups.items():
-        group_files.sort(key=lambda f: _natural_sort_key(f.stem))
+        group_files.sort(key=lambda item: _natural_sort_key(item.path.stem))
         counter = 1
 
-        for f in group_files:
-            suffix = f.suffix.lower()
+        for file_entry in group_files:
+            suffix = file_entry.path.suffix.lower()
 
             if prefix in image_exts:
                 new_stem = f"{counter:0{padding}d}"
@@ -108,27 +94,12 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
             else:
                 new_stem = f"{prefix}{counter:0{padding}d}"
 
-            target = working_dir / f"{new_stem}{suffix}"
-
-            if target == f:
+            new_name = f"{new_stem}{suffix}"
+            if new_name == file_entry.name:
                 counter += 1
                 continue
-
-            collision = 0
-            while target.exists():
-                collision += 1
-                target = working_dir / f"{new_stem}_{collision}{suffix}"
-
-            try:
-                f.rename(target)
-                renamed += 1
-            except OSError as e:
-                failed += 1
-                runtime.log(
-                    "gallery-rename",
-                    "error",
-                    f"重命名失败: {f.name} ({e})",
-                )
+            file_entry.rename(new_name)
+            renamed += 1
 
             counter += 1
 
@@ -136,10 +107,10 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
         runtime.log(
             "gallery-rename",
             "message",
-            f"重命名完成: {renamed} 个文件, {failed} 个失败。",
-            {"renamed": renamed, "failed": failed},
+            f"重命名完成: {renamed} 个文件。",
+            {"renamed": renamed},
         )
-    elif failed == 0:
+    else:
         runtime.log("gallery-rename", "message", "文件已为期望名称，无需重命名。")
 
     return ctx

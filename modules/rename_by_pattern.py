@@ -21,7 +21,6 @@ import re
 import string
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -34,7 +33,8 @@ MODULE_META = {
     "description": "使用匹配模式与替换表达式重命名文件，支持正则、日期变量、计数器、UUID 和随机字符串。",
     "core_version": "2.0.0",
     "tags": ["rename"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
     "scope": 1,
 }
 
@@ -207,20 +207,7 @@ def _expand_template(template: str, counter_state: dict[tuple, int], dt: datetim
     return "".join(result)
 
 
-def _collect_files(working_path: Path) -> list[Path]:
-    if working_path.is_dir():
-        return sorted(
-            [f for f in working_path.iterdir() if f.is_file()],
-            key=lambda f: f.name.lower(),
-        )
-    if working_path.is_file():
-        return [working_path]
-    return []
-
-
 def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
-    working_path = Path(ctx.working_path)
-
     match_pattern = cfg.get("match", "")
     use_regex = cfg.get("use_regex", False)
     include_extension = cfg.get("include_extension", False)
@@ -229,11 +216,7 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
     dt = datetime.now()
     counter_state: dict[tuple, int] = {}
 
-    files = _collect_files(working_path)
-    if not files:
-        runtime.log("rename-by-pattern", "error", "working_path 不是有效的文件或目录。")
-        return ctx
-
+    files = sorted(ctx.files(recursive=False), key=lambda entry: entry.name.lower())
     if not files:
         runtime.log("rename-by-pattern", "hint", "没有可重命名的文件。")
         return ctx
@@ -242,20 +225,18 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
         try:
             re.compile(match_pattern)
         except re.error as e:
-            runtime.log("rename-by-pattern", "error", f"正则表达式无效: {e}")
-            return ctx
+            raise ValueError(f"正则表达式无效: {e}") from e
 
     renames: list[dict] = []
     renamed_count = 0
-    failed_count = 0
-
-    for fp in files:
+    for file_entry in files:
+        source_path = file_entry.path
         if include_extension:
-            target_str = fp.name
+            target_str = file_entry.name
             suffix = ""
         else:
-            target_str = fp.stem
-            suffix = fp.suffix
+            target_str = source_path.stem
+            suffix = source_path.suffix
 
         expanded = _expand_template(replace_template, counter_state, dt)
 
@@ -269,41 +250,24 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
 
         new_name = new_stem + suffix
 
-        if new_name == fp.name:
+        if new_name == file_entry.name:
             continue
-
-        new_path = fp.parent / new_name
-
-        collision = 0
-        while new_path.exists():
-            collision += 1
-            base = Path(new_name)
-            if include_extension or not base.suffix:
-                alt = f"{base.stem}_{collision}{base.suffix}"
-            else:
-                alt = f"{base.stem}_{collision}{base.suffix}"
-            new_path = fp.parent / alt
-
-        try:
-            fp.rename(new_path)
-            renamed_count += 1
-            renames.append(
-                {
-                    "from": str(fp),
-                    "to": str(new_path),
-                    "from_name": fp.name,
-                    "to_name": new_path.name,
-                }
-            )
-            runtime.log(
-                "rename-by-pattern",
-                "success",
-                f"{fp.name} -> {new_path.name}",
-                {"old": str(fp), "new": str(new_path)},
-            )
-        except OSError as e:
-            failed_count += 1
-            runtime.log("rename-by-pattern", "error", f"重命名失败: {fp.name} ({e})")
+        renamed = file_entry.rename(new_name)
+        renamed_count += 1
+        renames.append(
+            {
+                "from": str(source_path),
+                "to": str(renamed.path),
+                "from_name": source_path.name,
+                "to_name": renamed.name,
+            }
+        )
+        runtime.log(
+            "rename-by-pattern",
+            "success",
+            f"{source_path.name} -> {renamed.name}",
+            {"old": str(source_path), "new": str(renamed.path)},
+        )
 
     if renames:
         existing = list(ctx.shared.get("renames", []))
@@ -314,10 +278,10 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
         runtime.log(
             "rename-by-pattern",
             "message",
-            f"重命名完成: {renamed_count} 个文件, {failed_count} 个失败。",
-            {"renamed": renamed_count, "failed": failed_count},
+            f"重命名完成: {renamed_count} 个文件。",
+            {"renamed": renamed_count},
         )
-    elif failed_count == 0:
+    else:
         runtime.log("rename-by-pattern", "hint", "文件名已符合目标模式，无需重命名。")
 
     return ctx

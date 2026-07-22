@@ -44,7 +44,7 @@
 - `--recurse=false` → 文件夹保持整体单元；文件单元本身仍为单文件。混合文件/文件夹输入各自成单元。
 - `--files` 覆盖 `--lines`；支持 `*`、`?`、`[]`、`**` 严格展开，未匹配模式报错；两者都没提供时 kind=none（空单元）。
 
-> **YAML `atom` 字段为可选 GUI 元数据**。内核不读它做执行/兼容性判断；YAML 提供 `atom` 时仅用于：① GUI 选择运行期显示的输入面板（path/line/none），② GUI 编辑器按 `is_file_module` 过滤可用模块。省略 `atom` 等价于"内核按实际输入推导"。
+> **YAML `atom` 字段为可选 GUI 元数据**。内核不读它做执行/兼容性判断；YAML 提供 `atom` 时仅用于 GUI 选择运行期显示的输入面板（path/line/none）。省略 `atom` 等价于"内核按实际输入推导"。
 
 #### scope — 上下文分发
 
@@ -53,8 +53,8 @@
 | scope | 含义 | 单元构造 | ctx / EventBus 生命周期 |
 |---|---|---|---|
 | `1` (per-unit) | 每个输入 = 1 个独立任务 | 每个 path/line 独立构造 ctx | 每 unit 独立 bus，独立 ctx.shared；下一个 unit 完全重置 |
-| `0` (shared) | 全部输入合并为 1 个任务 | 所有输入导入 `output_dir` 形成合并树 | 单个 ctx，单个 bus，模块读取 `ctx.files()` |
-| `N > 1` (batched) | 每 N 个输入 = 1 个任务 | path 输入进入 `_batch_NNNN` 顶层工作区；line 输入形成 `input_lines` | 每 batch 独立 bus 与 ctx.shared |
+| `0` (shared) | 全部输入合并为 1 个任务 | 读写工作流形成合并树；全只读工作流形成引用清单 | 单个 ctx，单个 bus，模块读取 `ctx.files()` |
+| `N > 1` (batched) | 每 N 个输入 = 1 个任务 | 读写 path 输入进入 `_batch_NNNN`；全只读 path 输入形成引用清单；line 输入形成 `input_lines` | 每 batch 独立 bus 与 ctx.shared |
 
 > **scope 不作为模块兼容性的硬约束**：executor 不用 `workflow.scope != module.scope` 拒绝模块。模块可在任何 scope 下运行，模块通过 `ctx.current` 和 `ctx.files()` 判断并遍历本单元资源。
 
@@ -73,7 +73,7 @@
 #### scope 切分机制
 
 - **scope=1 (per-unit)**：executor 遍历所有输入，为每个输入构造独立 `PipelineContext`，对每个 unit 依次执行全部 steps。不同 unit 之间 EventBus 完全隔离（通过 `runtime.replace_bus()`），ctx.shared 不跨 unit。
-- **scope=0 (shared)**：executor 将所有输入导入最终 `output_dir` 工作区形成合并树，构造唯一一个 `PipelineContext`，执行全部 steps。发布不再二次复制；顶层重名条目整体改名。
+- **scope=0 (shared)**：读写工作流把输入导入最终 `output_dir` 形成合并树；全只读工作流只建立带唯一逻辑相对路径的引用清单。两者都构造唯一一个 `PipelineContext` 并执行全部 steps。
 
 #### 模块与内核解耦
 
@@ -83,7 +83,8 @@
 - 无输入模块通过 `ctx.create_file()` 创造文件。
 - 模块通过 `ctx.current`/`ctx.files()` 获取本轮输入，不自行扫描其他 unit 的产物。
 - `runtime.log(..., "error", ...)` 仅表示日志严重度；致命失败必须抛异常。
-- `MODULE_META.is_file_module`（布尔）区分"path 处理模块"与"非 path 模块"（line/none/报告型），**仅用于 GUI 编辑器的模块过滤**，内核不校验。
+- `MODULE_META.access` 声明 `read` 或 `read_write`；缺省按 `read_write` 处理。只读模块调用工作区 mutation API 会失败。
+- `MODULE_META.platforms` 为 `None` 或 `windows/linux/darwin` 列表；当前平台不兼容的步骤跳过并继续后续步骤。
 
 #### 并发模型
 
@@ -119,7 +120,7 @@ shell-worker/
 │   ├── input_inspector.py      # GUI 前期路径校验（InputInspector，不展开目录）
 │   ├── files.py                # ExecutionWorkspace + UnitWorkspace + WorkspaceFile + 单元构建
 │   ├── config_schema.py        # 8 种参数类型校验
-│   ├── module_manager.py       # 模块扫描，校验 is_file_module + scope（含 VALID_SCOPES）
+│   ├── module_manager.py       # 模块扫描、统一契约自检、平台与访问能力
 │   ├── workflow_loader.py      # YAML 加载/保存/校验（atom 可选 GUI 元数据；含 VALID_SCOPES）
 │   ├── executor.py             # PipelineExecutor，scope=0/1/N 分发 + unit bus 隔离 + 取消检查
 │   ├── scheduler.py            # WorkflowScheduler：并发/监听/定时调度壳
@@ -142,13 +143,13 @@ shell-worker/
 │       ├── input_panel.py
 │       └── terminal_window.py
 │
-├── modules/                    # 示例模块（MODULE_META.is_file_module 区分 path / non-path）
-│   ├── verify_create_text_file.py     # is_file_module=False: 无输入创建文件
-│   ├── verify_rename_path.py          # is_file_module=True: 重命名 + 写 ctx.shared["renames"]
-│   ├── verify_write_summary.py        # is_file_module=False: 读 ctx.shared["renames"] 写摘要
-│   ├── cycle_counter.py               # is_file_module=True + scope=0: rglob 计数
-│   ├── verify_line_echo.py            # is_file_module=False: 读 ctx.shared["input_line"]
-│   └── verify_run_external_tool.py    # is_file_module=True: runtime.spawn (跨平台 PTY)
+├── modules/                    # 内置模块，统一使用 WorkspaceFile API
+│   ├── verify_create_text_file.py     # 无输入创建文件
+│   ├── verify_rename_path.py          # 重命名 + 写 ctx.shared["renames"]
+│   ├── verify_write_summary.py        # 读 ctx.shared["renames"] 写摘要
+│   ├── cycle_counter.py               # scope=0 清单计数
+│   ├── verify_line_echo.py            # 读 ctx.shared["input_line"]
+│   └── verify_run_external_tool.py    # runtime.spawn + adopt
 │
 ├── workflows/                  # 示例 YAML
 │   └── example-*.yaml
@@ -191,8 +192,8 @@ shell-worker/
               ┌────────┴─────────┬────────────────────┐
               ▼                  ▼                    ▼
         _prepare_steps      _build_units          per-unit：
-        (校验 CONFIG_SCHEMA) (path/line/none +    runtime.replace_bus()
-                             shared 树合并)       listener 自动迁移
+        (平台/access/参数)   (path/line/none +    runtime.replace_bus()
+                             合并树/引用清单)     listener 自动迁移
               │                                       │
               ▼                                       ▼
         PreparedStep[]                         ctx = ExecutionWorkspace
@@ -219,9 +220,16 @@ shell-worker/
 
 #### shared scope（scope=0）
 
-- 调用工作区的 shared unit 准备逻辑：把所有输入导入 `output_dir` 形成合并树；构造单 `ctx`，`ctx.current` 指向工作区根目录。
+- 有有效 `read_write` 步骤时，把所有输入导入 `output_dir` 形成合并树；全只读时只创建引用清单。两种模式都构造单 `ctx`，`ctx.current` 指向逻辑工作区根目录。
 - `direct_mode` + shared 不兼容：合并树需要拷贝落地，触发 `FileHandlingError`。
-- 模块通过 `ctx.files()` 获取合并树清单；内核在步骤边界 refresh。
+- 模块通过 `ctx.files()` 获取合并树或引用清单；内核在步骤边界 refresh。
+
+#### 平台跳过与只读引用
+
+- executor 仅对当前平台支持的步骤校验参数并执行；不兼容步骤记录带 `status=skipped` 的 warning，context 原样传给后续步骤。
+- 当前平台所有有效步骤均为 `access=read` 时，默认 COPY 路径切换为 REFERENCE，scope 0/1/N 都不复制输入。
+- REFERENCE 将引用资源与 owned 产物分开记录，publish/discard 不会修改原始输入；同名资源获得稳定的逻辑相对路径。
+- `--direct` 与 watch MOVE 保持显式语义并优先于 REFERENCE。
 
 ### 3.2 PipelineContext
 
@@ -230,13 +238,13 @@ shell-worker/
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `original_input` | `Path \| None` | 原始输入路径（line/none 模式为 None） |
-| `workspace` | `UnitWorkspace` | 当前单元的真实文件工作区，直接位于最终 `output_dir` |
+| `workspace` | `UnitWorkspace` | 当前单元清单；读写资源位于 `output_dir`，只读资源可引用原始路径 |
 | `shared` | `dict[str, Any]` | 单 unit 内跨步骤共享数据 |
 | `source_root` | `Path \| None` | recurse=true 时保留相对路径的源根 |
 | `current` | `WorkspaceFile` | 当前输入/目录资源 |
 
-方法：`path/file/entries/files/directories/create_file/create_directory/allocate_file/adopt/read_text/read_bytes/write_text/write_bytes/copy/move/rename/delete/refresh/publish/clone`。
-外部程序创建产物前先用 `allocate_file()` 取得不冲突的完整路径；由工具自行派生的产物通过 `adopt()` 加入清单，executor 在步骤边界调用 `refresh()`。
+方法：`path/file/set_current/entries/files/directories/create_file/create_directory/allocate_file/adopt/read_text/read_bytes/write_text/write_bytes/copy/move/rename/delete/refresh/publish/clone`。
+外部程序创建产物前先用 `allocate_file()` 取得不冲突的完整路径；由工具自行派生的产物通过 `adopt()` 加入清单，executor 在步骤边界调用 `refresh()`。单文件模块用新产物替换输入时，通过 `set_current()` 把新资源传给下游步骤。
 
 ### 3.3 PipelineRuntime
 
@@ -295,7 +303,7 @@ class WorkflowDefinition:
     source_path: Path | None = None
 ```
 
-**YAML 顶层字段**：`meta / scope / steps`（必填）、`atom / recurse`（可选）。`atom` 仅作 GUI 输入面板选择与编辑器模块过滤的元数据，内核按实际输入推导执行形状。
+**YAML 顶层字段**：`meta / scope / steps`（必填）、`atom / recurse`（可选）。`atom` 仅作 GUI 输入面板选择元数据，内核按实际输入推导执行形状。
 
 ### 3.7 ModuleDefinition
 
@@ -312,12 +320,13 @@ class ModuleDefinition:
     module: types.ModuleType
     core_version: str = "2.0.0"
     tags: tuple[str, ...] = ()    # 当前仅作 GUI 提示，预留为筛选标记
-    is_file_module: bool = True   # 区分 path 处理模块 / 非 path 模块（仅 GUI 过滤用）
+    access: Literal["read", "read_write"] = "read_write"
+    platforms: tuple[str, ...] | None = None
     scope: int = 1                # GUI 提示用，内核不校验
     parent: str | None = None
 ```
 
-`MODULE_META` 中 `is_file_module`（布尔，必填）区分该模块是否为 path 处理模块（`True`）或非 path 模块（`False`，如 line/none/报告型）；`scope`（可选 int，默认 1）仅作 GUI 提示，内核不校验。
+`access` 缺省为 `read_write`；`platforms=None` 支持全部平台。平台列表只能包含 `windows`、`linux`、`darwin`。GUI 显示全部模块并标注当前平台不可用项；`scope` 仅作提示，内核不校验模块 scope 兼容性。
 
 ### 3.8 WorkflowScheduler
 
@@ -348,7 +357,7 @@ class ModuleDefinition:
 每个 `modules/*.py` 必须导出：
 
 ```python
-MODULE_META: dict = { "slug", "name", "core_version", "tags", "is_file_module", "scope", ... }
+MODULE_META: dict = { "slug", "name", "core_version", "tags", "access", "platforms", "scope", ... }
 CONFIG_SCHEMA: dict = { "type": "object", "properties": {...}, "required": [...] }
 
 def run(ctx, cfg, runtime):
@@ -364,7 +373,8 @@ MODULE_META = {
     "name": "My Module",          # str，必填
     "core_version": "2.0.0",      # str，必填
     "tags": ["foo", "bar"],       # list[str]，必填
-    "is_file_module": True,       # bool，必填；True=path 处理模块，False=line/none/报告型
+    "access": "read_write",       # read | read_write；可选，默认 read_write
+    "platforms": None,            # None | list[windows|linux|darwin]
     "scope": 1,                   # int，可选，默认 1，合法值 >= 0，仅 GUI 提示
     "parent": "other-slug",       # str | None，可选，编辑器中插父模块之后
     "description": "...",         # str，可选
@@ -388,6 +398,10 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
 
 **失败约束**：模块无法继续时直接抛异常；内核包装为带 module/step 信息的 `ModuleExecutionError`。记录 `error` 事件后正常返回不会改变执行结果。
 
+**访问能力约束**：`access=read` 可读取文件和更新 `ctx.shared`，但任何工作区 mutation API 都会抛 `FileHandlingError`。调用可能修改文件或生成产物的外部程序时声明 `read_write`。
+
+**平台约束**：当前平台不在 `platforms` 中时，executor 不校验该步骤参数、不调用 `run()`，记录 skipped warning 后继续后续步骤。
+
 ### 4.4 跨步骤数据传递
 
 上游模块把需要暴露给下游的数据写入 `ctx.shared`，下游用同契约读取。不同 unit 间 ctx.shared 隔离，互不串流。
@@ -407,7 +421,7 @@ def run(ctx, cfg, runtime):
 def run(ctx, cfg, runtime):
     renames = ctx.shared.get("renames", [])
     for item in renames:
-        runtime.log("my-slug", "info", f"{item['from']} → {item['to']}")
+        runtime.log("my-slug", "message", f"{item['from']} → {item['to']}")
     return None
 ```
 
@@ -439,11 +453,11 @@ def run(ctx, cfg, runtime):
 
 ### 4.6 模块示例参考
 
-当前 WorkspaceFile 契约由 `verify_*` 与 `cycle_counter` 示例模块覆盖。图集、FFmpeg、压缩、解档等业务模块仍使用旧路径字段，运行前需要按本节接口迁移。
+所有内置模块均使用 WorkspaceFile 契约；图集、FFmpeg、压缩、解档和图片模块通过清单 API、allocate/adopt 与受控 mutation 处理文件。
 
 | 模式 | 文件 | 要点 |
 |---|---|---|
-| 无输入 | `verify_create_text_file.py` | 最小 run()、`is_file_module=False`、`ctx.create_file()` |
+| 无输入 | `verify_create_text_file.py` | 最小 run()、`ctx.create_file()` |
 | path + per-unit | `verify_rename_path.py` | `ctx.current.rename()`、写 `ctx.shared["renames"]` |
 | 读跨步骤合约 | `verify_write_summary.py` | 读 `ctx.shared["renames"]`、通过工作区写摘要 |
 | path + scope=0 | `cycle_counter.py` | `ctx.files()` 遍历工作区清单 |
@@ -480,13 +494,13 @@ steps:
 | `meta.slug` | str | 是 | 工作流唯一标识 |
 | `meta.name` | str | 是 | 显示名称 |
 | `meta.description` | str | 否 | 描述 |
-| `atom` | str | 否 | 可选 GUI 元数据：file/folder/line/none。内核不读，仅用于 GUI 输入面板选择与编辑器模块过滤 |
+| `atom` | str | 否 | 可选 GUI 元数据：file/folder/line/none。内核不读，仅用于 GUI 输入面板选择 |
 | `scope` | int | 是 | 批处理模式 0/1/N；内核用 scope 切分单元 |
 | `recurse` | bool | 否 | 默认 false，目录输入递归展开为内部文件单元 |
 | `steps[].module` | str | 是 | 模块 slug，须已注册 |
 | `steps[].params` | dict | 是 | 模块参数，须符合该模块 CONFIG_SCHEMA |
 
-步骤按数组顺序**严格依次执行**，无跳转、无循环、无条件。每个步骤的配置参数在 YAML 加载时即通过 CONFIG_SCHEMA 校验。内核**不**用 `atom`/`scope` 校验模块兼容性。
+步骤按数组顺序**严格依次执行**，无跳转、无循环、无条件。当前平台支持的步骤在执行准备阶段通过 CONFIG_SCHEMA 校验；平台不兼容步骤直接跳过。内核**不**用 `atom`/`scope` 校验模块兼容性。
 
 ---
 
@@ -501,7 +515,7 @@ python scripts/verify.py                  # 端到端验收（6 个工作流）
 ### 6.1 测试原则
 
 - 不测试具体模块行为：tests/ 只测内核边界、模式行为、IO、核心实现。具体模块功能由 `verify.py` 端到端冒烟覆盖。
-- 零 GUI 依赖：tests/ 不 import PySide6，可在 Linux CI 仅装 PyYAML 时跑通。
+- 零 GUI 依赖：tests/ 不 import PySide6，可在安装核心依赖与 pytest 的 Linux CI 跑通。
 - 跨平台 PTY 测试：Linux 覆盖 openpty/Popen，Windows 覆盖 winpty 与 subprocess fallback，共享同一会话契约。
 
 ### 6.2 测试文件覆盖
@@ -509,11 +523,11 @@ python scripts/verify.py                  # 端到端验收（6 个工作流）
 | 文件 | 覆盖 |
 |---|---|
 | `test_runtime.py` | EventBus 全 API + listener 异常隔离 + JSONL sink + Runtime 生命周期 + bus replace 时持久 listener 自动迁移 |
-| `test_executor.py` | per-unit bus 隔离；shared 合并树；shared+direct 拒收；cancel 在 step 边界；返回值合约非法拒绝；shared 跨步骤但不跨 unit |
+| `test_executor.py` | per-unit bus 隔离；shared 合并树；0/1/N 只读引用；平台跳过；访问保护；cancel；返回值与 shared 合约 |
 | `test_terminal.py` | spawn 事件流、session 注册、跨平台 mock_tool 调用 |
 | `test_input.py` | InputPlan.kind 解析、files/lines 优先级、混合 file/dir 接受 |
-| `test_files.py` | ExecutionWorkspace/UnitWorkspace/WorkspaceFile、清单与冲突命名 |
-| `test_module_manager.py` | is_file_module/scope 校验；MODULE_META 缺字段；重复 slug；parent；rescan |
+| `test_files.py` | ExecutionWorkspace/UnitWorkspace/WorkspaceFile、owned/reference 清单与冲突命名 |
+| `test_module_manager.py` | access/platforms/scope/签名/schema 校验；重复 slug；parent；rescan |
 | `test_workflow_loader.py` | YAML 拒绝旧字段 mode/batch；atom 可选；recurse 独立于 atom；保存往返 |
 | `test_config_schema.py` | 8 种参数类型校验 |
 | `test_cli.py` | argparse、退出码、`--list-*`、子进程运行示例、--lines 文本输入 |

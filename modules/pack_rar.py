@@ -1,4 +1,4 @@
-"""调用 WinRAR (rar.exe) 将文件夹打包为 .rar 压缩包。"""
+"""仅 Windows 工作，调用 WinRAR (rar.exe) 将文件夹打包为 .rar 压缩包。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ MODULE_META = {
     "name": "RAR 打包",
     "core_version": "2.0.0",
     "tags": ["archive", "compress", "rar"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": ["windows"],
     "description": "调用 WinRAR 将文件夹打包为 .rar 压缩包。",
 }
 
@@ -69,7 +70,13 @@ CONFIG_SCHEMA = {
 }
 
 
-def _build_command(cfg: dict, rar_exe: str, archive_path: Path, source_path: Path) -> list[str]:
+def _build_command(
+    cfg: dict,
+    rar_exe: str,
+    archive_path: Path,
+    source_path: Path,
+    comment_path: Path | None,
+) -> list[str]:
     cmd = [rar_exe, "a"]
 
     level = cfg.get("compression_level", "3")
@@ -82,12 +89,8 @@ def _build_command(cfg: dict, rar_exe: str, archive_path: Path, source_path: Pat
     if password:
         cmd.append("-hp" + password)
 
-    comment = cfg.get("comment", "").strip()
-    comment_file: Path | None = None
-    if comment:
-        comment_file = archive_path.parent / ".rar_comment.txt"
-        comment_file.write_text(comment, encoding="utf-8")
-        cmd.extend(["-z", str(comment_file)])
+    if comment_path is not None:
+        cmd.extend(["-z", str(comment_path)])
 
     cmd.append(str(archive_path))
     cmd.append(str(source_path))
@@ -97,55 +100,52 @@ def _build_command(cfg: dict, rar_exe: str, archive_path: Path, source_path: Pat
 def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
     rar_exe = cfg.get("winrar_path", "").strip()
     if not rar_exe:
-        runtime.log("pack-rar", "error", "未配置 WinRAR 路径，请在工作流中指定 rar.exe 的完整路径。")
-        return ctx
+        raise ValueError("未配置 WinRAR 路径，请在工作流中指定 rar.exe 的完整路径")
 
     rar_path = Path(rar_exe)
     if not rar_path.is_file():
-        runtime.log("pack-rar", "error", f"WinRAR 可执行文件不存在: {rar_exe}")
-        return ctx
+        raise FileNotFoundError(f"WinRAR 可执行文件不存在: {rar_exe}")
 
-    source = Path(ctx.working_path)
-    if not source.exists():
-        runtime.log("pack-rar", "error", f"源文件夹不存在: {source}")
-        return ctx
+    if not ctx.current.is_dir:
+        raise ValueError(f"当前工作区资源不是文件夹: {ctx.current.path}")
+    source = ctx.current.path
 
     archive_name = cfg.get("archive_name", "").strip()
     if not archive_name:
         archive_name = source.name
-    archive_path = ctx.output_dir / (archive_name + ".rar")
+    archive = ctx.allocate_file(archive_name + ".rar")
 
-    cmd = _build_command(cfg, rar_exe, archive_path, source)
-    comment_file = archive_path.parent / ".rar_comment.txt"
+    comment = cfg.get("comment", "").strip()
+    comment_file = ctx.create_file(".rar_comment.txt", comment) if comment else None
+    cmd = _build_command(
+        cfg,
+        rar_exe,
+        archive.path,
+        source,
+        comment_file.path if comment_file is not None else None,
+    )
 
-    runtime.log("pack-rar", "hint", f"WinRAR 命令行: {' '.join(cmd)}")
-    runtime.log("pack-rar", "message", f"开始打包: {source.name} → {archive_path.name} ...")
+    runtime.log("pack-rar", "message", f"开始打包: {source.name} → {archive.name} ...")
 
     try:
         result = runtime.spawn(cmd)
-    except OSError as e:
-        runtime.log("pack-rar", "error", f"WinRAR 启动失败: {e}")
-        return ctx
+    except Exception:
+        ctx.delete(archive.path)
+        raise
     finally:
-        if comment_file.exists():
-            try:
-                comment_file.unlink()
-            except OSError:
-                pass
+        if comment_file is not None:
+            comment_file.delete()
 
     if result.is_success:
-        ctx.track_extra_file(archive_path)
-        runtime.log("pack-rar", "success", f"打包完成: {archive_path.name}")
+        ctx.adopt(archive.path)
+        runtime.log("pack-rar", "success", f"打包完成: {archive.name}")
 
         if cfg.get("delete_after", False):
-            try:
-                import shutil
-
-                shutil.rmtree(source)
-                runtime.log("pack-rar", "message", f"已删除源文件夹: {source.name}")
-            except OSError as e:
-                runtime.log("pack-rar", "warning", f"删除源文件夹失败: {e}")
+            source_name = ctx.current.name
+            ctx.current.delete()
+            runtime.log("pack-rar", "message", f"已删除源文件夹: {source_name}")
     else:
-        runtime.log("pack-rar", "error", f"WinRAR 返回非零退出码: {result.exit_code}")
+        ctx.delete(archive.path)
+        raise RuntimeError(f"WinRAR 返回非零退出码: {result.exit_code}")
 
     return ctx

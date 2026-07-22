@@ -1,10 +1,8 @@
-"""清除文件的只读/隐藏属性。"""
+"""仅 Windows 工作，文件预处理组件，用于清除文件的只读/隐藏属性防止后续步骤操作被阻止。"""
 
 from __future__ import annotations
 
 import ctypes
-import platform
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -16,7 +14,8 @@ MODULE_META = {
     "name": "清除文件属性",
     "core_version": "2.0.0",
     "tags": ["attribute", "system"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": ["windows"],
     "description": "清除文件的只读/隐藏属性，确保后续操作不受文件属性限制。",
 }
 
@@ -59,20 +58,7 @@ def _set_attrs(path: str, attrs: int) -> bool:
         return False
 
 
-def _collect_targets(ctx: PipelineContext) -> list[Path]:
-    wp = Path(ctx.working_path)
-    if wp.is_file():
-        return [wp]
-    if wp.is_dir():
-        return [f for f in wp.iterdir() if f.is_file()]
-    return []
-
-
 def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
-    if platform.system() != "Windows":
-        runtime.log("strip-attributes", "hint", "当前系统非 Windows，跳过属性清除。")
-        return ctx
-
     remove_readonly = cfg.get("remove_readonly", True)
     remove_hidden = cfg.get("remove_hidden", False)
 
@@ -86,16 +72,14 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
         runtime.log("strip-attributes", "hint", "未选择任何待清除属性。")
         return ctx
 
-    targets = _collect_targets(ctx)
+    targets = ctx.files(recursive=False)
     if not targets:
         runtime.log("strip-attributes", "hint", "无可操作的文件。")
         return ctx
 
     processed = 0
-    failed = 0
-
-    for f in targets:
-        path_str = str(f)
+    for target in targets:
+        path_str = str(target.path)
         attrs = _get_attrs(path_str)
         if attrs is None or (attrs & mask) == 0:
             continue
@@ -115,19 +99,18 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
             runtime.log(
                 "strip-attributes",
                 "success",
-                f"已清除属性: {f.name} ({', '.join(parts)})",
+                f"已清除属性: {target.name} ({', '.join(parts)})",
             )
         else:
-            failed += 1
-            runtime.log("strip-attributes", "error", f"清除属性失败: {f.name}")
+            raise OSError(f"清除属性失败: {target.name}")
 
     if processed > 0:
         runtime.log(
             "strip-attributes",
             "message",
-            f"属性清除完成: {processed} 个处理, {failed} 个失败。",
+            f"属性清除完成: {processed} 个处理。",
         )
-    elif failed == 0:
+    else:
         runtime.log("strip-attributes", "hint", "未发现需要清除属性的文件。")
 
     return ctx

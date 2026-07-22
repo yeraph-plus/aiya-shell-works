@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 import main as main_module
-from main import main
 from core.exceptions import PipelineExecutionError
+from main import main
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -27,7 +27,8 @@ def test_cli_list_modules_returns_0(tmp_path: Path, capsys) -> None:
 MODULE_META = {
     "slug": "cli-demo", "name": "CLI Demo",
     "core_version": "2.0.0", "tags": ["t"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
 }
 CONFIG_SCHEMA = {"type": "object", "properties": {}}
 def run(ctx, cfg, runtime): return ctx
@@ -63,7 +64,7 @@ def test_cli_runs_none_workflow_succeeds(tmp_path: Path, capsys) -> None:
 from pathlib import Path
 MODULE_META = {
     "slug": "mk", "name": "MK", "core_version": "2.0.0",
-     "tags": ["t"], "is_file_module": False,
+     "tags": ["t"], "access": "read_write", "platforms": None,
 }
 CONFIG_SCHEMA = {
     "type": "object",
@@ -151,7 +152,8 @@ from pathlib import Path
 MODULE_META = {
     "slug": "echo", "name": "Echo",
     "core_version": "2.0.0", "tags": [],
-    "is_file_module": False,
+    "access": "read_write",
+    "platforms": None,
 }
 CONFIG_SCHEMA = {"type": "object", "properties": {}}
 def run(ctx, cfg, runtime):

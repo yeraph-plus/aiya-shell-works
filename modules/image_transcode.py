@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from PIL import Image, ImageOps
 
 if TYPE_CHECKING:
     from core.context import PipelineContext
+    from core.files import WorkspaceFile
     from core.runtime import PipelineRuntime
 
 MODULE_META = {
@@ -16,7 +16,8 @@ MODULE_META = {
     "name": "图片转码",
     "core_version": "2.0.0",
     "tags": ["image", "transcode", "avif", "jpg"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
     "description": "将图片无损转码为 AVIF，或清除透明通道后转码为 JPEG。",
 }
 
@@ -66,7 +67,7 @@ CONFIG_SCHEMA = {
 SLUG = MODULE_META["slug"]
 
 
-def _collect_targets(ctx: PipelineContext, runtime: PipelineRuntime) -> list[Path]:
+def _collect_targets(ctx: PipelineContext, runtime: PipelineRuntime) -> list[WorkspaceFile]:
     from core.tools import collect_file_targets
 
     targets = collect_file_targets(ctx, extensions=SUPPORTED_EXTENSIONS)
@@ -101,25 +102,26 @@ def run(
     )
 
     processed = 0
-    failed = 0
-
+    original_current = ctx.current.path
     for target in targets:
-        runtime.log(SLUG, "info", f"Processing: {target.name}")
-
+        runtime.log(SLUG, "message", f"Processing: {target.name}")
+        output_file = None
         try:
-            img = Image.open(target)
+            img = Image.open(target.path)
             img = ImageOps.exif_transpose(img)
 
             if mode == "avif":
-                save_path = target.with_suffix(".avif")
+                desired_name = target.path.with_suffix(".avif").name
+                output_file = ctx.allocate_file(desired_name)
                 if img.mode in ("P", "PA"):
                     img = img.convert("RGBA")
                 elif img.mode not in ("RGB", "RGBA", "L", "LA"):
                     img = img.convert("RGBA")
-                img.save(save_path, lossless=True)
+                img.save(output_file.path, lossless=True)
 
             elif mode == "jpg":
-                save_path = target.with_suffix(".jpg")
+                desired_name = target.path.with_suffix(".jpg").name
+                output_file = ctx.allocate_file(desired_name)
                 if img.mode == "RGBA":
                     background = Image.new("RGB", img.size, bg_color)
                     background.paste(img, mask=img.split()[3])
@@ -133,26 +135,28 @@ def run(
                     img = img.convert("RGB")
                 if img.mode != "RGB":
                     img = img.convert("RGB")
-                img.save(save_path, optimize=True, quality=quality)
+                img.save(output_file.path, optimize=True, quality=quality)
 
-            if save_path != target:
-                target.unlink(missing_ok=True)
+            output_file = ctx.adopt(output_file.path)
+            replaces_current = target.path == original_current
+            target.delete()
+            if target.name == desired_name and output_file.name != desired_name:
+                output_file = output_file.rename(desired_name)
+            if replaces_current:
+                ctx.set_current(output_file.path)
 
             processed += 1
 
         except Exception:
-            runtime.log(SLUG, "error", f"Failed to transcode: {target.name}")
-            failed += 1
-            continue
+            if output_file is not None:
+                ctx.delete(output_file.path)
+            raise
 
     runtime.log(
         SLUG,
-        "success" if failed == 0 else "warning",
-        f"Transcoded {processed} image(s) to {mode.upper()}, {failed} failed (total {len(targets)}).",
-        {"mode": mode, "processed": processed, "failed": failed, "total": len(targets)},
+        "success",
+        f"Transcoded {processed} image(s) to {mode.upper()} (total {len(targets)}).",
+        {"mode": mode, "processed": processed, "total": len(targets)},
     )
-
-    if failed > 0 and processed == 0:
-        runtime.log(SLUG, "error", "All images failed to transcode.")
 
     return ctx

@@ -19,7 +19,8 @@ MODULE_META = {
     "description": "Write a single text file into the output directory.",
     "core_version": "2.0.0",
     "tags": ["example", "io"],
-    "is_file_module": False,
+    "access": "read_write",
+    "platforms": None,
 }
 
 CONFIG_SCHEMA = {

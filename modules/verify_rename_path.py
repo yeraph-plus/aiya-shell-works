@@ -20,7 +20,8 @@ MODULE_META = {
     "description": "Prepend/append a prefix or suffix to the working path.",
     "core_version": "2.0.0",
     "tags": ["example", "rename"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
 }
 
 CONFIG_SCHEMA = {
@@ -54,5 +55,4 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
         f"{src.name} -> {renamed.name}",
         {"old": str(src.path), "new": str(renamed.path)},
     )
-    ctx.workspace.current_path = renamed.path
     return ctx.clone(shared={**ctx.shared, "renames": renames})

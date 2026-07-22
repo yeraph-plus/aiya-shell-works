@@ -31,8 +31,8 @@ from .executor import PipelineExecutor, PreparedStep, execute_workflow
 from .files import (
     ExecutionWorkspace,
     UnitWorkspace,
-    WorkspaceFile,
     WorkingCopier,
+    WorkspaceFile,
     build_lines_units,
     build_path_units,
     make_unique_path,
@@ -41,8 +41,12 @@ from .files import (
 from .input import InputPlan, resolve_input
 from .input_inspector import InputInspector, ValidationResult
 from .module_manager import (
+    VALID_MODULE_ACCESS,
+    VALID_MODULE_PLATFORMS,
+    ModuleAccess,
     ModuleDefinition,
     ModuleManager,
+    current_platform,
 )
 from .runtime import PipelineRuntime
 from .scheduler import WorkflowScheduler
@@ -97,6 +101,10 @@ __all__ = [
     "WorkflowValidationError",
     "ModuleDefinition",
     "ModuleManager",
+    "ModuleAccess",
+    "VALID_MODULE_ACCESS",
+    "VALID_MODULE_PLATFORMS",
+    "current_platform",
     "PipelineExecutor",
     "execute_workflow",
     "WorkflowScheduler",

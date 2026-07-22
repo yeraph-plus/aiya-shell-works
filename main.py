@@ -194,8 +194,8 @@ def _list_modules(manager: ModuleManager) -> None:
     modules = manager.scan_modules()
     print(f"modules ({len(modules)}):")
     for slug, d in sorted(modules.items()):
-        kind = "path" if d.is_file_module else "line/none"
-        print(f"  {slug}  kind={kind} scope={d.scope} tags={list(d.tags)}")
+        platforms = "all" if d.platforms is None else list(d.platforms)
+        print(f"  {slug}  access={d.access} platforms={platforms} scope={d.scope} tags={list(d.tags)}")
     for w in manager.warnings:
         print(f"  [warn] {w}")
 

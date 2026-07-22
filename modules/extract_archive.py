@@ -17,7 +17,8 @@ MODULE_META = {
     "name": "提取图集",
     "core_version": "2.0.0",
     "tags": ["extract", "zip", "gallery", "archive"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
     "description": "从 ZIP 压缩包中随机提取图片文件到输出目录，并生成 info.json 信息文件。",
 }
 
@@ -50,23 +51,16 @@ _VIDEO_EXTENSIONS = _parse_extensions("mp4 mov mkv wmv flv webm avi")
 
 
 def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
-    working_path = Path(ctx.working_path)
-    output_dir = Path(ctx.output_dir)
-
-    if working_path.suffix.lower() != ".zip":
-        runtime.log(
-            "extract-archive",
-            "error",
-            f"文件类型不支持，仅接受 .zip 文件: {working_path.name}",
-        )
-        return ctx
+    if not ctx.current.is_file or ctx.current.path.suffix.lower() != ".zip":
+        raise ValueError(f"文件类型不支持，仅接受 .zip 文件: {ctx.current.name}")
+    working_path = ctx.current.path
 
     extract_count = int(cfg.get("extract_count", 6))
     category = cfg.get("category", "Gallery")
 
     try:
-        with zipfile.ZipFile(working_path, "r") as zf:
-            all_entries = [n for n in zf.infolist() if not n.is_dir()]
+        with zipfile.ZipFile(working_path, "r") as archive:
+            all_entries = [entry for entry in archive.infolist() if not entry.is_dir()]
             image_files = []
             video_files = []
             other_files = []
@@ -83,35 +77,21 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
                     other_files.append(entry.filename)
 
             if not image_files:
-                runtime.log(
-                    "extract-archive",
-                    "error",
-                    f"ZIP 中未发现图片文件: {working_path.name}",
-                )
-                return ctx
+                raise ValueError(f"ZIP 中未发现图片文件: {working_path.name}")
 
             selected_count = min(extract_count, len(image_files))
             selected = random.sample(image_files, selected_count)
-    except zipfile.BadZipFile:
-        runtime.log(
-            "extract-archive",
-            "error",
-            f"ZIP 文件损坏或无法读取: {working_path.name}",
-        )
-        return ctx
+    except zipfile.BadZipFile as exc:
+        raise ValueError(f"ZIP 文件损坏或无法读取: {working_path.name}") from exc
 
     stem = working_path.stem
-    subfolder = output_dir / stem
-    subfolder.mkdir(parents=True, exist_ok=True)
+    subfolder = ctx.create_directory(stem)
 
-    extracted_files = []
-    with zipfile.ZipFile(working_path, "r") as zf:
+    with zipfile.ZipFile(working_path, "r") as archive:
         for name in selected:
             original_name = Path(name).name
-            dest = _unique_path(subfolder / original_name)
-            with zf.open(name) as src:
-                dest.write_bytes(src.read())
-            extracted_files.append(dest)
+            with archive.open(name) as source:
+                ctx.create_file(subfolder.path / original_name, source.read())
 
     info = {
         "title": stem,
@@ -124,15 +104,13 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
         },
         "file_size": total_uncompressed,
         "thumbnail": "./.thumb",
-        "tags": {}
+        "tags": {},
     }
-    info_path = subfolder / "info.json"
-    info_path.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    ctx.track_extra_file(subfolder)
-    ctx.track_extra_file(info_path)
-    for path in extracted_files:
-        ctx.track_extra_file(path)
+    ctx.create_file(
+        subfolder.path / "info.json",
+        json.dumps(info, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
     runtime.log(
         "extract-archive",
@@ -144,21 +122,8 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
             "total_videos": len(video_files),
             "total_other": len(other_files),
             "total_size": total_uncompressed,
-            "subfolder": str(subfolder),
+            "subfolder": str(subfolder.path),
         },
     )
 
     return ctx
-
-def _unique_path(target: Path) -> Path:
-    if not target.exists():
-        return target
-    parent = target.parent
-    stem = target.stem
-    suffix = target.suffix
-    counter = 1
-    while True:
-        candidate = parent / f"{stem}_{counter}{suffix}"
-        if not candidate.exists():
-            return candidate
-        counter += 1

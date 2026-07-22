@@ -20,7 +20,8 @@ MODULE_META = {
     "description": "Echo a single input text line into a file in output_dir.",
     "core_version": "2.0.0",
     "tags": ["example", "echo"],
-    "is_file_module": False,
+    "access": "read_write",
+    "platforms": None,
 }
 
 CONFIG_SCHEMA = {
@@ -40,5 +41,4 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
     runtime.log(
         "verify-line-echo", "success", f"已写入: {line[:40]!r} -> {filename}", {"line": line, "file": str(target.path)}
     )
-    ctx.workspace.current_path = target.path
     return ctx

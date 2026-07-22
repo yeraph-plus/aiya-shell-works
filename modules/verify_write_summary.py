@@ -23,7 +23,8 @@ MODULE_META = {
     "description": "Write a small summary file capturing renames and current working_path.",
     "core_version": "2.0.0",
     "tags": ["example", "report"],
-    "is_file_module": False,
+    "access": "read_write",
+    "platforms": None,
     "parent": "verify-rename-path",
 }
 

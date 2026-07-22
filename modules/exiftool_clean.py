@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -14,7 +15,8 @@ MODULE_META = {
     "name": "清除EXIF元数据",
     "core_version": "2.0.0",
     "tags": ["exif", "metadata", "privacy"],
-    "is_file_module": True,
+    "access": "read_write",
+    "platforms": None,
     "description": "使用 ExifTool 清除图片/视频/PDF 文件的元数据。",
 }
 
@@ -96,17 +98,21 @@ def _resolve_exiftool_path(cfg: dict[str, Any]) -> str | None:
         if p.exists():
             return str(p)
 
+    installed = shutil.which("exiftool")
+    if installed:
+        return installed
+
     project_root = Path(__file__).resolve().parent.parent
     resources = project_root / "resources"
 
-    for exe_name in ["exiftool(-k).exe", "exiftool.exe"]:
+    for exe_name in ["exiftool", "exiftool(-k).exe", "exiftool.exe"]:
         for candidate in sorted(resources.glob("exiftool-*"), key=lambda p: p.name, reverse=True):
             exe = candidate / exe_name
             if exe.exists():
                 return str(exe)
 
     exiftool_dir = resources / "exiftool"
-    for exe_name in ["exiftool(-k).exe", "exiftool.exe"]:
+    for exe_name in ["exiftool", "exiftool(-k).exe", "exiftool.exe"]:
         exe = exiftool_dir / exe_name
         if exe.exists():
             return str(exe)
@@ -114,31 +120,21 @@ def _resolve_exiftool_path(cfg: dict[str, Any]) -> str | None:
     return None
 
 
-def _collect_targets(ctx: PipelineContext, cfg: dict[str, Any]) -> list[Path]:
-    wp = Path(ctx.working_path)
-    if wp.is_file():
-        return [wp] if wp.suffix.lower() in _SUPPORTED_EXTENSIONS else []
-    if wp.is_dir():
-        if cfg.get("recursive", False):
-            return [wp]
-        return [f for f in wp.iterdir() if f.is_file() and f.suffix.lower() in _SUPPORTED_EXTENSIONS]
-    return []
-
-
 def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
-    targets = _collect_targets(ctx, cfg)
+    targets = [
+        entry
+        for entry in ctx.files(recursive=cfg.get("recursive", False))
+        if entry.path.suffix.lower() in _SUPPORTED_EXTENSIONS
+    ]
     if not targets:
         runtime.log("exiftool-clean", "message", "未发现支持格式的文件，跳过。")
         return ctx
 
     exiftool = _resolve_exiftool_path(cfg)
     if exiftool is None:
-        runtime.log(
-            "exiftool-clean",
-            "error",
-            "ExifTool 未找到，请配置路径或将 exiftool(-k).exe 放置到 resources/exiftool/ 下，或在工作流配置中指定 exiftool(-k).exe 位置。",  # noqa: E501
+        raise FileNotFoundError(
+            "ExifTool 未找到，请配置路径、安装 exiftool，或放置到 resources/exiftool/ 下。"
         )
-        return ctx
 
     cmd = [exiftool, "-all=", "-overwrite_original"]
 
@@ -151,11 +147,7 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
     if cfg.get("keep_datetime", False):
         cmd.extend(["-tagsfromfile", "@", "-DateTimeOriginal", "-CreateDate", "-ModifyDate"])
 
-    if cfg.get("recursive", False) and ctx.is_dir:
-        cmd.append("-r")
-        cmd.append(str(ctx.working_path))
-    else:
-        cmd.extend(str(f) for f in targets)
+    cmd.extend(str(entry.path) for entry in targets)
 
     runtime.log(
         "exiftool-clean",
@@ -168,11 +160,7 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
         f"开始清除 {len(targets)} 个文件的元数据 (ExifTool: {exiftool})...",
     )
 
-    try:
-        result = runtime.spawn(cmd, exit_pattern="-- press ENTER --")
-    except OSError as e:
-        runtime.log("exiftool-clean", "error", f"ExifTool 启动失败: {e}")
-        return ctx
+    result = runtime.spawn(cmd, exit_pattern="-- press ENTER --")
 
     if result.is_success:
         runtime.log(
@@ -182,10 +170,6 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
             {"file_count": len(targets)},
         )
     else:
-        runtime.log(
-            "exiftool-clean",
-            "error",
-            f"ExifTool 返回非零退出码: {result.exit_code}",
-        )
+        raise RuntimeError(f"ExifTool 返回非零退出码: {result.exit_code}")
 
     return ctx

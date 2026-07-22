@@ -52,23 +52,12 @@ def filter_modules(
     modules: Mapping[str, ModuleDefinition],
     *,
     active_tags: set[str] | None = None,
-    expected_is_file_module: bool | None = None,
 ) -> list[ModuleDefinition]:
-    """Filter and sort modules by tag AND ``is_file_module`` kind.
-
-    ``expected_is_file_module`` is a GUI-only hint derived from the workflow's
-    input mode: ``True`` for path (file/folder) workflows, ``False`` for
-    line/none workflows.  When provided, modules whose ``is_file_module``
-    differs are excluded (hard distinction — no fallback "show all" switch).
-    The kernel performs NO atom/scope compatibility check on modules; this
-    filter only shapes the editor's available-module list.
-    """
+    """Filter and sort modules by tag."""
 
     filtered: list[ModuleDefinition] = []
     for definition in modules.values():
         if active_tags and not (active_tags <= set(definition.tags)):
-            continue
-        if expected_is_file_module is not None and definition.is_file_module != expected_is_file_module:
             continue
         filtered.append(definition)
 
@@ -84,12 +73,10 @@ def filter_modules(
 def iter_schema_fields(schema: Mapping[str, Any] | None) -> tuple[SchemaField, ...]:
     if not isinstance(schema, Mapping):
         return ()
-    if schema.get("type") == "object" and isinstance(schema.get("properties"), Mapping):
-        properties = schema["properties"]
-        required_fields = {item for item in schema.get("required", []) if isinstance(item, str) and item.strip()}
-    else:
-        properties = {k: v for k, v in schema.items() if isinstance(k, str) and isinstance(v, Mapping)}
-        required_fields = set()
+    if schema.get("type") != "object" or not isinstance(schema.get("properties"), Mapping):
+        return ()
+    properties = schema["properties"]
+    required_fields = {item for item in schema.get("required", []) if isinstance(item, str) and item.strip()}
 
     fields: list[SchemaField] = []
     for name, raw in properties.items():
@@ -105,8 +92,8 @@ def iter_schema_fields(schema: Mapping[str, Any] | None) -> tuple[SchemaField, .
                 default=default,
                 required=name in required_fields or bool(definition.get("required")),
                 options=options,
-                minimum=_coerce_number(definition.get("minimum")),
-                maximum=_coerce_number(definition.get("maximum")),
+                minimum=_coerce_number(definition.get("min")),
+                maximum=_coerce_number(definition.get("max")),
                 step=_coerce_number(definition.get("step")),
                 placeholder=str(definition.get("placeholder", "")),
                 description=str(definition.get("description", "")),

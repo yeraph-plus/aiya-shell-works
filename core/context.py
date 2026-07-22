@@ -34,6 +34,9 @@ class PipelineContext:
     def file(self, path: str | Path) -> WorkspaceFile:
         return self.workspace.file(path)
 
+    def set_current(self, path: str | Path) -> WorkspaceFile:
+        return self.workspace.set_current(path)
+
     def entries(self, recursive: bool = True) -> list[WorkspaceFile]:
         return self.workspace.entries(recursive=recursive)
 
@@ -85,7 +88,7 @@ class PipelineContext:
     def publish(self) -> None:
         self.workspace.publish()
 
-    def clone(self, **changes: Any) -> "PipelineContext":
+    def clone(self, **changes: Any) -> PipelineContext:
         allowed = {"workspace", "original_input", "shared", "source_root"}
         invalid = set(changes) - allowed
         if invalid:

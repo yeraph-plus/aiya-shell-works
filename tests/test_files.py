@@ -243,6 +243,122 @@ def test_workspace_discard_removes_only_current_unit_entries(tmp_path: Path) -> 
     assert not generated.path.exists()
 
 
+def test_reference_unit_reads_source_without_copy_and_rejects_mutation(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    source = tmp_path / "source.txt"
+    source.write_text("source", encoding="utf-8")
+    workspace = ExecutionWorkspace(out)
+    plan = InputPlan(kind="path", recurse=False, files=(source,), lines=())
+    ctx = workspace.prepare_unit(
+        1,
+        {"path": source, "source_root": None},
+        plan,
+        reference_mode=True,
+    )
+
+    assert ctx.current.path == source
+    assert ctx.current.read_text(encoding="utf-8") == "source"
+    assert not (out / "source.txt").exists()
+    with pytest.raises(FileHandlingError, match="只读引用"):
+        ctx.current.write_text("changed", encoding="utf-8")
+    assert source.read_text(encoding="utf-8") == "source"
+
+
+def test_referenced_file_does_not_expose_sibling_paths(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    source = tmp_path / "source.txt"
+    sibling = tmp_path / "sibling.txt"
+    source.write_text("source", encoding="utf-8")
+    sibling.write_text("sibling", encoding="utf-8")
+    workspace = ExecutionWorkspace(out)
+    plan = InputPlan(kind="path", recurse=False, files=(source,), lines=())
+    ctx = workspace.prepare_unit(
+        1,
+        {"path": source, "source_root": None},
+        plan,
+        reference_mode=True,
+    )
+
+    with pytest.raises(FileHandlingError, match="路径越界"):
+        ctx.read_text(sibling, encoding="utf-8")
+
+
+def test_referenced_directory_exposes_descendants(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    source = tmp_path / "source"
+    source.mkdir()
+    child = source / "child.txt"
+    child.write_text("child", encoding="utf-8")
+    workspace = ExecutionWorkspace(out)
+    plan = InputPlan(kind="path", recurse=False, files=(source,), lines=())
+    ctx = workspace.prepare_unit(
+        1,
+        {"path": source, "source_root": None},
+        plan,
+        reference_mode=True,
+    )
+
+    assert ctx.read_text(child, encoding="utf-8") == "child"
+
+
+def test_direct_file_does_not_expose_sibling_paths(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    source = tmp_path / "source.txt"
+    sibling = tmp_path / "sibling.txt"
+    source.write_text("source", encoding="utf-8")
+    sibling.write_text("sibling", encoding="utf-8")
+    workspace = ExecutionWorkspace(out)
+    plan = InputPlan(kind="path", recurse=False, files=(source,), lines=())
+    ctx = workspace.prepare_unit(
+        1,
+        {"path": source, "source_root": None},
+        plan,
+        direct_mode=True,
+    )
+
+    with pytest.raises(FileHandlingError, match="路径越界"):
+        ctx.read_text(sibling, encoding="utf-8")
+
+
+def test_set_current_selects_existing_tracked_resource(tmp_path: Path) -> None:
+    workspace = ExecutionWorkspace(tmp_path / "out")
+    ctx = workspace.prepare_unit(
+        1,
+        {"path": None, "source_root": None},
+        InputPlan(kind="none", recurse=False, files=(), lines=()),
+    )
+    created = ctx.create_file("created.txt", "created")
+
+    selected = ctx.set_current(created.path)
+
+    assert selected.path == created.path
+    assert ctx.current.path == created.path
+
+
+def test_shared_reference_assigns_unique_logical_paths(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    first = first_dir / "same.txt"
+    second = second_dir / "same.txt"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    workspace = ExecutionWorkspace(out)
+    plan = InputPlan(kind="path", recurse=False, files=(first, second), lines=())
+    ctx = workspace.prepare_unit(
+        1,
+        {"__shared_paths__": [first, second], "source_root": None},
+        plan,
+        reference_mode=True,
+    )
+
+    assert ctx.current.path == out
+    assert [str(entry.relative_path) for entry in ctx.files()] == ["same (1).txt", "same.txt"]
+    assert list(out.iterdir()) == []
+
+
 # ---------------------------------------------------------------------------
 # scope=shared
 # ---------------------------------------------------------------------------
