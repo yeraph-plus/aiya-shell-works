@@ -46,12 +46,12 @@ CONFIG_SCHEMA = {
 
 def run(ctx, cfg, runtime):
     suffix = cfg["suffix"]
-    new = Path(str(ctx.working_path) + suffix)
-    Path(ctx.working_path).rename(new)
+    old = ctx.current
+    new = old.rename(old.name + suffix)
     renames = list(ctx.shared.get("renames", []))
-    renames.append({"from": str(ctx.working_path), "to": str(new)})
-    updated = ctx.clone(working_path=new, shared={**ctx.shared, "renames": renames})
-    return updated
+    renames.append({"from": str(old.path), "to": str(new.path)})
+    ctx.workspace.current_path = new.path
+    return ctx.clone(shared={**ctx.shared, "renames": renames})
 """
 
 SHARED_COUNT_MODULE = """
@@ -75,12 +75,11 @@ CONFIG_SCHEMA = {
 }
 
 def run(ctx, cfg, runtime):
-    files = sorted(p for p in Path(ctx.working_path).rglob("*") if p.is_file())
+    files = sorted(entry.path for entry in ctx.files())
     for i, fp in enumerate(files, 1):
         runtime.log("shared-count", "success", f"{i}: {fp.name}")
-    report = Path(ctx.working_path) / cfg["report_name"]
-    report.write_text(f"count={len(files)}\\n", encoding="utf-8")
-    return ctx.clone(extra_files=[*ctx.extra_files, report])
+    ctx.create_file(cfg["report_name"], f"count={len(files)}\\n")
+    return ctx
 """
 
 LINE_ECHO_MODULE = """
@@ -101,9 +100,8 @@ CONFIG_SCHEMA = {
 
 def run(ctx, cfg, runtime):
     line = ctx.shared.get("input_line", "")
-    fp = Path(ctx.output_dir) / f"{abs(hash(line)) & 0xffff}.txt"
-    fp.write_text(line + "\\n", encoding="utf-8")
-    return ctx.clone(working_path=fp, extra_files=[*ctx.extra_files, fp])
+    ctx.create_file(f"{abs(hash(line)) & 0xffff}.txt", line + "\\n")
+    return ctx
 """
 
 BATCH_LINE_MODULE = """
@@ -126,9 +124,8 @@ CONFIG_SCHEMA = {
 def run(ctx, cfg, runtime):
     lines = list(ctx.shared.get("input_lines", []))
     runtime.log("demo-line-batch", "success", f"batch={len(lines)} lines={'|'.join(lines)}")
-    fp = Path(ctx.output_dir) / f"{lines[0]}_{len(lines)}.txt"
-    fp.write_text("\\n".join(lines), encoding="utf-8")
-    return ctx.clone(working_path=fp, extra_files=[*ctx.extra_files, fp])
+    ctx.create_file(f"{lines[0]}_{len(lines)}.txt", "\\n".join(lines))
+    return ctx
 """
 
 PATH_BATCH_MODULE = """
@@ -149,11 +146,10 @@ CONFIG_SCHEMA = {
 }
 
 def run(ctx, cfg, runtime):
-    files = sorted(p.name for p in Path(ctx.working_path).rglob("*") if p.is_file())
+    files = sorted(entry.name for entry in ctx.files())
     runtime.log("demo-path-batch", "success", f"batch={len(files)} files={'|'.join(files)}")
-    report = Path(ctx.working_path) / "batch.txt"
-    report.write_text("\\n".join(files), encoding="utf-8")
-    return ctx.clone(extra_files=[*ctx.extra_files, report])
+    ctx.create_file("batch.txt", "\\n".join(files))
+    return ctx
 """
 
 NONE_MODULE = """
@@ -175,9 +171,8 @@ CONFIG_SCHEMA = {
 }
 
 def run(ctx, cfg, runtime):
-    fp = Path(ctx.output_dir) / cfg["filename"]
-    fp.write_text(cfg["content"], encoding="utf-8")
-    return ctx.clone(working_path=fp, extra_files=[*ctx.extra_files, fp])
+    ctx.create_file(cfg["filename"], cfg["content"])
+    return ctx
 """
 
 SYNTHESIS_MODULE = """
@@ -191,7 +186,7 @@ MODULE_META = {
 CONFIG_SCHEMA = {"type": "object", "properties": {}}
 
 def run(ctx, cfg, runtime):
-    runtime.log("demo-synth", "success", f"is_file={ctx.is_file} is_dir={ctx.is_dir}")
+    runtime.log("demo-synth", "success", f"is_file={ctx.current.is_file} is_dir={ctx.current.is_dir}")
     return ctx
 """
 
@@ -649,12 +644,11 @@ CONFIG_SCHEMA = {"type": "object", "properties": {}}
 
 def run(ctx, cfg, runtime):
     renames = ctx.shared.get("renames", [])
-    fp = Path(ctx.output_dir) / "summary.txt"
     lines = ["renames:"]
     for r in renames:
         lines.append(f"- {r['from']} -> {r['to']}")
-    fp.write_text("\\n".join(lines), encoding="utf-8")
-    return ctx.clone(extra_files=[*ctx.extra_files, fp])
+    ctx.create_file("summary.txt", "\\n".join(lines))
+    return ctx
 """
 
 
@@ -705,16 +699,14 @@ def test_shared_does_not_leak_between_units(modules_dir: Path, tmp_path: Path) -
     executor = PipelineExecutor(ModuleManager(modules_dir), runtime=PipelineRuntime())
     summary = executor.execute(WorkflowLoader(tmp_path / "workflows").load("wf.yaml"), output_dir=out, files=[a, b])
     assert summary["success"]
-    # Two summary.txt files would both be the same path 鈥?we expect 1 file
-    # We expect both inputs to have been renamed into output.
-    renamed_files = [f for f in out.iterdir() if f.is_file() and f.name != "summary.txt"]
-    assert len(renamed_files) == 2
-    # The summary.txt (path-collided under out/root) reflects only the LAST
-    # unit's shared dict — proving that per-unit scopes do not leak shared.
-    text = (out / "summary.txt").read_text(encoding="utf-8")
-    assert "- " in text
-    # Critical: must NOT contain BOTH a.txt and b.txt at once (would indicate leakage).
-    assert not ("a.txt_x" in text and "b.txt_x" in text)
+    reports = sorted(out.glob("summary*.txt"))
+    assert [report.name for report in reports] == ["summary (1).txt", "summary.txt"]
+    renamed_files = sorted(path.name for path in out.iterdir() if path.is_file() and path not in reports)
+    assert renamed_files == ["a.txt_x", "b.txt_x"]
+    texts = [report.read_text(encoding="utf-8") for report in reports]
+    assert all("- " in text for text in texts)
+    assert sum("a.txt_x" in text for text in texts) == 1
+    assert sum("b.txt_x" in text for text in texts) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -805,7 +797,7 @@ MODULE_META = {
 CONFIG_SCHEMA = {"type": "object", "properties": {}}
 
 def run(ctx, cfg, runtime):
-    runtime.log("demo-folder", "success", f"is_dir={ctx.is_dir} working={ctx.working_path.name}")
+    runtime.log("demo-folder", "success", f"is_dir={ctx.current.is_dir} working={ctx.current.name}")
     return ctx
 """
 

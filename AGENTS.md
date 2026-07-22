@@ -32,13 +32,13 @@
 
 #### 输入模式（内核内部，`InputPlan.kind`）
 
-`InputPlan.kind` 仅供 executor + `WorkingCopier` 用于构建单元，**不对外暴露为模块兼容性约束**。
+`InputPlan.kind` 仅供 executor + `ExecutionWorkspace` 用于构建单元，**不对外暴露为模块兼容性约束**。
 
 | kind | 含义 | 输入来源 | 每个单元 |
 |---|---|---|---|
 | `path` | 路径输入 | `--files`（文件/文件夹，可混合） | 一个文件 或 一个文件夹整体（取决 `recurse`） |
 | `line` | 文本行输入 | `--lines` / `--lines-file` / stdin | 一行非空文本 |
-| `none` | 无输入 | 无 | 1 个空单元（`working_path = 本单元临时 output_dir`） |
+| `none` | 无输入 | 无 | 1 个空单元（`ctx.current = output_dir`） |
 
 - `--recurse=true` → 文件夹输入被递归展开为内部文件单元，保留 `source_root` 以维持相对路径复制语义。
 - `--recurse=false` → 文件夹保持整体单元；文件单元本身仍为单文件。混合文件/文件夹输入各自成单元。
@@ -53,11 +53,10 @@
 | scope | 含义 | 单元构造 | ctx / EventBus 生命周期 |
 |---|---|---|---|
 | `1` (per-unit) | 每个输入 = 1 个独立任务 | 每个 path/line 独立构造 ctx | 每 unit 独立 bus，独立 ctx.shared；下一个 unit 完全重置 |
-| `0` (shared) | 全部输入合并为 1 个任务 | 所有输入复制进干净临时 `output_dir` 形成合并树 | 单个 ctx，单个 bus，模块内部 rglob 合并树自行遍历 |
+| `0` (shared) | 全部输入合并为 1 个任务 | 所有输入导入 `output_dir` 形成合并树 | 单个 ctx，单个 bus，模块读取 `ctx.files()` |
+| `N > 1` (batched) | 每 N 个输入 = 1 个任务 | path 输入进入 `_batch_NNNN` 顶层工作区；line 输入形成 `input_lines` | 每 batch 独立 bus 与 ctx.shared |
 
-scope 值 > 1 预留用于按批次截取 N 个输入为 1 任务（分片），当前视为 scope=1 执行。
-
-> **scope 不作为模块兼容性的硬约束**：executor 不用 `workflow.scope != module.scope` 拒绝模块。模块可在任何 scope 下运行，但 per-unit 模块若被放入 shared 工作流，`working_path` 将是合并树根目录，模块须用 `ctx.is_file` / `ctx.is_dir` 自我门控。
+> **scope 不作为模块兼容性的硬约束**：executor 不用 `workflow.scope != module.scope` 拒绝模块。模块可在任何 scope 下运行，模块通过 `ctx.current` 和 `ctx.files()` 判断并遍历本单元资源。
 
 ### 2.2 核心设计逻辑
 
@@ -74,15 +73,15 @@ scope 值 > 1 预留用于按批次截取 N 个输入为 1 任务（分片），
 #### scope 切分机制
 
 - **scope=1 (per-unit)**：executor 遍历所有输入，为每个输入构造独立 `PipelineContext`，对每个 unit 依次执行全部 steps。不同 unit 之间 EventBus 完全隔离（通过 `runtime.replace_bus()`），ctx.shared 不跨 unit。
-- **scope=0 (shared)**：executor 将所有输入复制进本轮干净临时目录形成合并树，构造唯一一个 `PipelineContext`，执行全部 steps。成功后内核把工作区覆盖合并到最终输出目录。
+- **scope=0 (shared)**：executor 将所有输入导入最终 `output_dir` 工作区形成合并树，构造唯一一个 `PipelineContext`，执行全部 steps。发布不再二次复制；顶层重名条目整体改名。
 
 #### 模块与内核解耦
 
 模块**不关心内核的调度逻辑**（单文件 / 一组文件 / scope 值），只处理每次 ctx 传入的数据并传出：
-- 模块用 `ctx.is_file` / `ctx.is_dir` 判定工作路径形态。
+- 模块用 `ctx.current.is_file` / `ctx.current.is_dir` 判定当前资源形态。
 - 行输入模块读 `ctx.shared.get("input_line")`。
-- 无输入模块直接从 `ctx.output_dir` 创造文件。
-- 模块只遍历 `ctx.working_path` 获取本轮输入，不把最终输出目录当作输入源。
+- 无输入模块通过 `ctx.create_file()` 创造文件。
+- 模块通过 `ctx.current`/`ctx.files()` 获取本轮输入，不自行扫描其他 unit 的产物。
 - `runtime.log(..., "error", ...)` 仅表示日志严重度；致命失败必须抛异常。
 - `MODULE_META.is_file_module`（布尔）区分"path 处理模块"与"非 path 模块"（line/none/报告型），**仅用于 GUI 编辑器的模块过滤**，内核不校验。
 
@@ -118,13 +117,13 @@ shell-worker/
 │   ├── terminal.py             # 跨平台 PTY：winpty / pty / subprocess fallback
 │   ├── input.py                # InputPlan 解析
 │   ├── input_inspector.py      # GUI 前期路径校验（InputInspector，不展开目录）
-│   ├── files.py                # WorkingCopier + 单元构建（path/lines/none/shared）
+│   ├── files.py                # ExecutionWorkspace + UnitWorkspace + WorkspaceFile + 单元构建
 │   ├── config_schema.py        # 8 种参数类型校验
 │   ├── module_manager.py       # 模块扫描，校验 is_file_module + scope（含 VALID_SCOPES）
 │   ├── workflow_loader.py      # YAML 加载/保存/校验（atom 可选 GUI 元数据；含 VALID_SCOPES）
-│   ├── executor.py             # PipelineExecutor，scope=0/1 分发 + per-unit bus 隔离 + 取消检查
+│   ├── executor.py             # PipelineExecutor，scope=0/1/N 分发 + unit bus 隔离 + 取消检查
 │   ├── scheduler.py            # WorkflowScheduler：并发/监听/定时调度壳
-│   └── tools.py                # 公用模块助手（collect_file_targets 按 ctx.is_file/is_dir 路由）
+│   └── tools.py                # 公用模块助手（collect_file_targets 按工作区清单路由）
 │
 ├── gui/                        # 可选桌面层（PySide6）
 │   ├── __init__.py
@@ -196,7 +195,7 @@ shell-worker/
                              shared 树合并)       listener 自动迁移
               │                                       │
               ▼                                       ▼
-        PreparedStep[]                         ctx = WorkingCopier
+        PreparedStep[]                         ctx = ExecutionWorkspace
                                                   .prepare_*_unit(...)
               │                                       │
               └──────► for step in prepared_steps:
@@ -220,28 +219,24 @@ shell-worker/
 
 #### shared scope（scope=0）
 
-- 调用 `prepare_shared_path_unit(paths, recurse=...)`：把所有输入复制进 `output_dir` 形成合并树；构造单 `ctx`，`working_path = output_dir`。
+- 调用工作区的 shared unit 准备逻辑：把所有输入导入 `output_dir` 形成合并树；构造单 `ctx`，`ctx.current` 指向工作区根目录。
 - `direct_mode` + shared 不兼容：合并树需要拷贝落地，触发 `FileHandlingError`。
-- 模块自行 rglob 合并树遍历（如 `cycle_counter`）。
+- 模块通过 `ctx.files()` 获取合并树清单；内核在步骤边界 refresh。
 
 ### 3.2 PipelineContext
 
-**`core/context.py`** — mutable slots dataclass，每个处理单元一个实例。模块通过它读路径、读 `shared`、追加 `extra_files`。控制面（事件、进程）由 `PipelineRuntime` 管理。
+**`core/context.py`** — mutable slots dataclass，每个处理单元一个实例。所有真实文件操作由 `UnitWorkspace`/`WorkspaceFile` 提供，控制面由 `PipelineRuntime` 管理。
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `original_input` | `Path \| None` | 原始输入路径（line/none 模式为 None） |
-| `working_path` | `Path` | 当前工作副本路径；复制/移动模式位于单元临时工作区 |
-| `output_dir` | `Path` | 当前单元干净临时产物目录；执行完成后发布到用户输出目录 |
+| `workspace` | `UnitWorkspace` | 当前单元的真实文件工作区，直接位于最终 `output_dir` |
 | `shared` | `dict[str, Any]` | 单 unit 内跨步骤共享数据 |
-| `extra_files` | `list[Path]` | 已追踪的额外产出文件 |
 | `source_root` | `Path \| None` | recurse=true 时保留相对路径的源根 |
-| `is_file` | `bool` | working_path 是否为文件（自动计算） |
-| `is_dir` | `bool` | working_path 是否为目录（自动计算） |
+| `current` | `WorkspaceFile` | 当前输入/目录资源 |
 
-方法：
-- `clone(**changes)` — 浅拷贝 + 字段覆盖；仅在 `_VALID_CLONE_FIELDS` 内的字段可覆盖。
-- `track_extra_file(path)` — 追踪产物文件。
+方法：`path/file/entries/files/directories/create_file/create_directory/allocate_file/adopt/read_text/read_bytes/write_text/write_bytes/copy/move/rename/delete/refresh/publish/clone`。
+外部程序创建产物前先用 `allocate_file()` 取得不冲突的完整路径；由工具自行派生的产物通过 `adopt()` 加入清单，executor 在步骤边界调用 `refresh()`。
 
 ### 3.3 PipelineRuntime
 
@@ -370,7 +365,7 @@ MODULE_META = {
     "core_version": "2.0.0",      # str，必填
     "tags": ["foo", "bar"],       # list[str]，必填
     "is_file_module": True,       # bool，必填；True=path 处理模块，False=line/none/报告型
-    "scope": 1,                   # int，可选，默认 1，合法值 {0, 1}，仅 GUI 提示
+    "scope": 1,                   # int，可选，默认 1，合法值 >= 0，仅 GUI 提示
     "parent": "other-slug",       # str | None，可选，编辑器中插父模块之后
     "description": "...",         # str，可选
 }
@@ -429,7 +424,7 @@ def run(ctx, cfg, runtime):
     if not tool.exists():
         runtime.log("my-slug", "error", f"未找到 {tool}")
         raise FileNotFoundError(str(tool))
-    result = runtime.spawn([str(tool), str(ctx.working_path)])
+    result = runtime.spawn([str(tool), str(ctx.current.path)])
     if not result.is_success:
         raise RuntimeError(f"exit={result.exit_code}")
     return ctx
@@ -444,12 +439,14 @@ def run(ctx, cfg, runtime):
 
 ### 4.6 模块示例参考
 
+当前 WorkspaceFile 契约由 `verify_*` 与 `cycle_counter` 示例模块覆盖。图集、FFmpeg、压缩、解档等业务模块仍使用旧路径字段，运行前需要按本节接口迁移。
+
 | 模式 | 文件 | 要点 |
 |---|---|---|
-| 无输入 | `verify_create_text_file.py` | 最小 run()、`is_file_module=False`、`track_extra_file` |
-| path + per-unit | `verify_rename_path.py` | `clone(working_path=...)`、写 `ctx.shared["renames"]` |
-| 读跨步骤合约 | `verify_write_summary.py` | 读 `ctx.shared["renames"]`、多事件类型、`track_extra_file` |
-| path + scope=0 | `cycle_counter.py` | rglob working_path 自行遍历 |
+| 无输入 | `verify_create_text_file.py` | 最小 run()、`is_file_module=False`、`ctx.create_file()` |
+| path + per-unit | `verify_rename_path.py` | `ctx.current.rename()`、写 `ctx.shared["renames"]` |
+| 读跨步骤合约 | `verify_write_summary.py` | 读 `ctx.shared["renames"]`、通过工作区写摘要 |
+| path + scope=0 | `cycle_counter.py` | `ctx.files()` 遍历工作区清单 |
 | line + per-unit | `verify_line_echo.py` | 读 `ctx.shared["input_line"]` |
 | 调用外部工具 | `verify_run_external_tool.py` | `runtime.spawn`；事件流；exit_code 决策 |
 
@@ -465,7 +462,7 @@ meta:
   name: My Workflow          # 显示名称
   description: ...          # 可选
 atom: file                   # 可选 GUI 元数据：file | folder | line | none
-scope: 1                     # 0 | 1
+scope: 1                     # 0 | 1 | N
 recurse: false               # 可选，目录输入递归展开
 steps:
   - module: my-module-slug
@@ -515,7 +512,7 @@ python scripts/verify.py                  # 端到端验收（6 个工作流）
 | `test_executor.py` | per-unit bus 隔离；shared 合并树；shared+direct 拒收；cancel 在 step 边界；返回值合约非法拒绝；shared 跨步骤但不跨 unit |
 | `test_terminal.py` | spawn 事件流、session 注册、跨平台 mock_tool 调用 |
 | `test_input.py` | InputPlan.kind 解析、files/lines 优先级、混合 file/dir 接受 |
-| `test_files.py` | WorkingCopier 全套；shared 合并树；direct + shared 拒绝；folder 单元 |
+| `test_files.py` | ExecutionWorkspace/UnitWorkspace/WorkspaceFile、清单与冲突命名 |
 | `test_module_manager.py` | is_file_module/scope 校验；MODULE_META 缺字段；重复 slug；parent；rescan |
 | `test_workflow_loader.py` | YAML 拒绝旧字段 mode/batch；atom 可选；recurse 独立于 atom；保存往返 |
 | `test_config_schema.py` | 8 种参数类型校验 |

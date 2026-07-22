@@ -38,12 +38,11 @@ def run(ctx, cfg, runtime):
     if action == "raise":
         raise RuntimeError("fixture failure")
     if action == "count":
-        count = len([path for path in Path(ctx.working_path).rglob("*") if path.is_file()])
-        report = Path(ctx.output_dir) / "count.txt"
-        report.write_text(f"count={count}\\n", encoding="utf-8")
-        return ctx.clone(extra_files=[*ctx.extra_files, report])
+        count = len(ctx.files())
+        ctx.create_file("count.txt", f"count={count}\\n")
+        return ctx
     if action == "terminal":
-        delay = "0.1" if Path(ctx.working_path).name.startswith("fast") else "0.8"
+        delay = "0.1" if ctx.current.name.startswith("fast") else "0.8"
         result = runtime.spawn(["/bin/sh", "-c", f"sleep {delay}; printf done"])
         if not result.is_success:
             raise RuntimeError(f"terminal exit={result.exit_code}")
@@ -98,6 +97,7 @@ def test_shared_repeated_output_uses_clean_workspace(module_manager: ModuleManag
     assert first["success"] and second["success"]
     assert first_count == "count=1\n"
     assert (output / "count.txt").read_text(encoding="utf-8") == "count=1\n"
+    assert (output / "count (1).txt").read_text(encoding="utf-8") == "count=1\n"
     assert (output / "old-unrelated.txt").read_text(encoding="utf-8") == "keep"
 
 

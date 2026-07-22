@@ -32,12 +32,12 @@ CONFIG_SCHEMA = {
 def run(ctx, cfg, runtime):
     CALLS.append(
         {
-            "is_file": ctx.is_file,
-            "is_dir": ctx.is_dir,
+            "is_file": ctx.current.is_file,
+            "is_dir": ctx.current.is_dir,
             "marker": cfg.get("marker", ""),
-            "working_path": str(ctx.working_path),
+            "working_path": str(ctx.current.path),
             "shared": dict(ctx.shared),
-            "extra_files": list(ctx.extra_files),
+            "files": [str(entry.path) for entry in ctx.files()],
             "original_input": str(ctx.original_input) if ctx.original_input else None,
         }
     )

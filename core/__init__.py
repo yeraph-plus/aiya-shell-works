@@ -28,7 +28,16 @@ from .exceptions import (
     WorkflowValidationError,
 )
 from .executor import PipelineExecutor, PreparedStep, execute_workflow
-from .files import WorkingCopier, build_lines_units, build_path_units, make_unique_path, units_from_plan
+from .files import (
+    ExecutionWorkspace,
+    UnitWorkspace,
+    WorkspaceFile,
+    WorkingCopier,
+    build_lines_units,
+    build_path_units,
+    make_unique_path,
+    units_from_plan,
+)
 from .input import InputPlan, resolve_input
 from .input_inspector import InputInspector, ValidationResult
 from .module_manager import (
@@ -71,6 +80,9 @@ __all__ = [
     "InputInspector",
     "ValidationResult",
     "WorkingCopier",
+    "ExecutionWorkspace",
+    "UnitWorkspace",
+    "WorkspaceFile",
     "build_lines_units",
     "build_path_units",
     "units_from_plan",

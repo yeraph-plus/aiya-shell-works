@@ -7,7 +7,6 @@ no input needed).
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -34,7 +33,6 @@ CONFIG_SCHEMA = {
 
 
 def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
-    target = Path(ctx.output_dir) / cfg["filename"]
-    target.write_text(cfg["content"], encoding="utf-8")
-    runtime.log("verify-create-text-file", "success", f"已生成 {target.name}", {"path": str(target)})
-    return ctx.clone(working_path=target, extra_files=[*ctx.extra_files, target])
+    target = ctx.create_file(cfg["filename"], cfg["content"])
+    runtime.log("verify-create-text-file", "success", f"已生成 {target.name}", {"path": str(target.path)})
+    return ctx

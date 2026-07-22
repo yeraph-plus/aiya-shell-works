@@ -8,7 +8,6 @@ collisions in ``output_dir``.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -37,10 +36,9 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
     line = ctx.shared.get("input_line", "")
     ident = f"{abs(hash(line)) & 0xFFFF:04x}"
     filename = f"{cfg['prefix']}_{ident}{cfg['extension']}"
-    target = Path(ctx.output_dir) / filename
-    target.write_text(line + "\n", encoding="utf-8")
-    ctx.track_extra_file(target)
+    target = ctx.create_file(filename, line + "\n")
     runtime.log(
-        "verify-line-echo", "success", f"已写入: {line[:40]!r} -> {filename}", {"line": line, "file": str(target)}
+        "verify-line-echo", "success", f"已写入: {line[:40]!r} -> {filename}", {"line": line, "file": str(target.path)}
     )
-    return ctx.clone(working_path=target)
+    ctx.workspace.current_path = target.path
+    return ctx

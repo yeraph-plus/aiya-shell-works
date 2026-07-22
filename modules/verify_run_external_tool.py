@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 MODULE_META = {
     "slug": "verify-run-external-tool",
     "name": "Verify — Run External Tool",
-    "description": "Invoke an external CLI binary on each working file; verification helper using resources/mock_tool.",
+    "description": "Invoke an external CLI binary on each working file using resources/mock_tool.",
     "core_version": "2.0.0",
     "tags": ["example", "external"],
     "is_file_module": True,
@@ -69,9 +69,12 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
         except OSError:
             pass
 
-    cmd = [str(tool), str(ctx.working_path)]
+    cmd = [str(tool), str(ctx.current.path)]
     runtime.log("verify-run-external-tool", "hint", f"spawn: {' '.join(cmd)}")
     result = runtime.spawn(cmd)
+    sidecar_path = Path(f"{ctx.current.path}.done")
+    if sidecar_path.exists():
+        ctx.adopt(sidecar_path)
     runtime.log(
         "verify-run-external-tool",
         "success" if result.is_success else "error",

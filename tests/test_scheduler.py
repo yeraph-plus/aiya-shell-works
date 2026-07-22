@@ -40,9 +40,9 @@ def run(ctx, cfg, runtime):
     import time
     time.sleep(0.02)
     suffix = cfg["suffix"]
-    new = Path(str(ctx.working_path) + suffix)
-    Path(ctx.working_path).rename(new)
-    return ctx.clone(working_path=new)
+    renamed = ctx.current.rename(ctx.current.name + suffix)
+    ctx.workspace.current_path = renamed.path
+    return ctx
 """
 
 NONE_MODULE = """
@@ -63,9 +63,8 @@ CONFIG_SCHEMA = {
 }
 
 def run(ctx, cfg, runtime):
-    fp = Path(ctx.output_dir) / cfg["filename"]
-    fp.write_text("none_output", encoding="utf-8")
-    return ctx.clone(working_path=fp)
+    ctx.create_file(cfg["filename"], "none_output")
+    return ctx
 """
 
 SHARED_COUNT = """
@@ -82,11 +81,10 @@ MODULE_META = {
 CONFIG_SCHEMA = {"type": "object", "properties": {}}
 
 def run(ctx, cfg, runtime):
-    files = sorted(p.name for p in Path(ctx.working_path).rglob("*") if p.is_file())
+    files = sorted(entry.name for entry in ctx.files())
     runtime.log("sched-count", "success", f"seen={len(files)}")
-    report = Path(ctx.working_path) / "report.txt"
-    report.write_text(f"count={len(files)}\\n", encoding="utf-8")
-    return ctx.clone(extra_files=[*ctx.extra_files, report])
+    ctx.create_file("report.txt", f"count={len(files)}\\n")
+    return ctx
 """
 
 

@@ -1,17 +1,4 @@
-"""PipelineContext: business-only data carrier for one processing unit.
-
-The context never carries control-flow state (event bus, terminal sessions,
-cancellation, resume).  All such state lives on ``PipelineRuntime``.  Modules
-interact with the runtime through the third ``run(ctx, cfg, runtime)``
-parameter rather than reaching through the context.
-
-Why "no events on context":
-The previous design let modules call ``ctx.events.log(...)`` and that
-implicitly shared the bus with downstream modules.  Authors had to remember
-``clone(events=...)`` to keep the bus alive, which made reasoning fragile.
-With ``runtime`` as the explicit control handle, the bus is always present
-and never accidentally duplicated on a ``clone()``.
-"""
+"""Module-facing execution context."""
 
 from __future__ import annotations
 
@@ -19,68 +6,95 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-_VALID_CLONE_FIELDS: frozenset[str] = frozenset(
-    {
-        "original_input",
-        "working_path",
-        "output_dir",
-        "shared",
-        "extra_files",
-        "source_root",
-        # is_file/is_dir are included for structural completeness but are
-        # unconditionally overwritten by __post_init__ — caller values ignored.
-        "is_file",
-        "is_dir",
-    }
-)
+from .files import UnitWorkspace, WorkspaceFile
 
 
 @dataclass(slots=True)
 class PipelineContext:
-    """Per-unit business data.  Mutated through ``clone(**changes)`` or in place."""
+    """Business state for one unit; filesystem state lives on ``workspace``."""
 
-    original_input: Path | None
-    working_path: Path
-    output_dir: Path
+    workspace: UnitWorkspace
+    original_input: Path | None = None
     shared: dict[str, Any] = field(default_factory=dict)
-    extra_files: list[Path] = field(default_factory=list)
     source_root: Path | None = None
-    is_file: bool = False
-    is_dir: bool = False
 
     def __post_init__(self) -> None:
         if self.original_input is not None:
             self.original_input = Path(self.original_input)
-        self.working_path = Path(self.working_path)
-        self.output_dir = Path(self.output_dir)
         if self.source_root is not None:
             self.source_root = Path(self.source_root)
-        self.is_file = self.working_path.is_file()
-        self.is_dir = self.working_path.is_dir()
 
-    def clone(self, **changes: Any) -> PipelineContext:
-        """Shallow-copy with field override.  ``events`` is intentionally absent."""
+    @property
+    def current(self) -> WorkspaceFile:
+        return self.workspace.current
 
-        for key in changes:
-            if key not in _VALID_CLONE_FIELDS:
-                allowed = ", ".join(sorted(_VALID_CLONE_FIELDS))
-                raise TypeError(f"clone() 不支持字段 '{key}'，有效字段: {allowed}")
+    def path(self, *parts: str | Path) -> Path:
+        return self.workspace.path(*parts)
+
+    def file(self, path: str | Path) -> WorkspaceFile:
+        return self.workspace.file(path)
+
+    def entries(self, recursive: bool = True) -> list[WorkspaceFile]:
+        return self.workspace.entries(recursive=recursive)
+
+    def files(self, recursive: bool = True) -> list[WorkspaceFile]:
+        return self.workspace.files(recursive=recursive)
+
+    def directories(self, recursive: bool = True) -> list[WorkspaceFile]:
+        return self.workspace.directories(recursive=recursive)
+
+    def create_file(self, name: str | Path, data: str | bytes = b"", **kwargs: Any) -> WorkspaceFile:
+        return self.workspace.create_file(name, data, **kwargs)
+
+    def create_directory(self, name: str | Path) -> WorkspaceFile:
+        return self.workspace.create_directory(name)
+
+    def allocate_file(self, name: str | Path) -> WorkspaceFile:
+        return self.workspace.allocate_file(name)
+
+    def adopt(self, path: str | Path) -> WorkspaceFile:
+        return self.workspace.adopt(path)
+
+    def read_text(self, source: str | Path, **kwargs: Any) -> str:
+        return self.workspace.read_text(source, **kwargs)
+
+    def read_bytes(self, source: str | Path) -> bytes:
+        return self.workspace.read_bytes(source)
+
+    def write_text(self, target: str | Path, data: str, **kwargs: Any) -> WorkspaceFile:
+        return self.workspace.write_text(target, data, **kwargs)
+
+    def write_bytes(self, target: str | Path, data: bytes) -> WorkspaceFile:
+        return self.workspace.write_bytes(target, data)
+
+    def copy(self, source: str | Path, target: str | Path) -> WorkspaceFile:
+        return self.workspace.copy(source, target)
+
+    def move(self, source: str | Path, target: str | Path) -> WorkspaceFile:
+        return self.workspace.move(source, target)
+
+    def rename(self, source: str | Path, name: str) -> WorkspaceFile:
+        return self.workspace.rename(source, name)
+
+    def delete(self, source: str | Path) -> None:
+        self.workspace.delete(source)
+
+    def refresh(self) -> None:
+        self.workspace.refresh()
+
+    def publish(self) -> None:
+        self.workspace.publish()
+
+    def clone(self, **changes: Any) -> "PipelineContext":
+        allowed = {"workspace", "original_input", "shared", "source_root"}
+        invalid = set(changes) - allowed
+        if invalid:
+            raise TypeError(f"clone() 不支持字段: {', '.join(sorted(invalid))}")
         payload = {
+            "workspace": self.workspace,
             "original_input": self.original_input,
-            "working_path": self.working_path,
-            "output_dir": self.output_dir,
             "shared": dict(self.shared),
-            "extra_files": list(self.extra_files),
             "source_root": self.source_root,
-            "is_file": self.is_file,
-            "is_dir": self.is_dir,
         }
         payload.update(changes)
         return PipelineContext(**payload)
-
-    def track_extra_file(self, path: str | Path) -> Path:
-        """Track a side产出 file so later steps / GUI pick it up."""
-
-        tracked = Path(path)
-        self.extra_files.append(tracked)
-        return tracked

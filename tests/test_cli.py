@@ -73,9 +73,8 @@ CONFIG_SCHEMA = {
     },
 }
 def run(ctx, cfg, runtime):
-    fp = Path(ctx.output_dir) / cfg["filename"]
-    fp.write_text(cfg["content"], encoding="utf-8")
-    return ctx.clone(working_path=fp, extra_files=[*ctx.extra_files, fp])
+    ctx.create_file(cfg["filename"], cfg["content"])
+    return ctx
 """,
         encoding="utf-8",
     )
@@ -157,9 +156,8 @@ MODULE_META = {
 CONFIG_SCHEMA = {"type": "object", "properties": {}}
 def run(ctx, cfg, runtime):
     line = ctx.shared.get("input_line", "")
-    target = Path(ctx.output_dir) / f"{abs(hash(line)) & 0xffff}.txt"
-    target.write_text(line + "\\n", encoding="utf-8")
-    return ctx.clone(working_path=target, extra_files=[*ctx.extra_files, target])
+    ctx.create_file(f"{abs(hash(line)) & 0xffff}.txt", line + "\\n")
+    return ctx
 """,
         encoding="utf-8",
     )

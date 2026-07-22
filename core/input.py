@@ -10,9 +10,9 @@ The kernel derives its execution shape from the actual inputs (no YAML
 3. All empty → a single empty unit (no input).
 
 The internal ``InputPlan.kind`` is one of ``"path"`` / ``"line"`` / ``"none"``
-and is consumed only by the executor / WorkingCopier to build units.  It is
-NOT exposed to modules as a hard constraint — modules read ``ctx.is_file`` /
-``ctx.is_dir`` / ``ctx.shared["input_line"]`` instead.
+and is consumed only by the executor / ExecutionWorkspace to build units.  It is
+NOT exposed to modules as a hard constraint — modules read ``ctx.current`` /
+``ctx.files()`` / ``ctx.shared["input_line"]`` instead.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ class InputPlan:
     """The outcome of CLI / GUI input resolution.
 
     ``kind`` is an internal kernel hint for unit construction; not exported
-    as a module-facing constraint.
+as a module-facing constraint.
     """
 
     kind: str

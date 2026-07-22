@@ -2,16 +2,15 @@
 
 Reads the cross-step contract from ``ctx.shared["renames"]`` written by
 ``rename-path`` and persists a human-readable summary back to
-``output_dir``.  Demonstrates:
+the unit workspace.  Demonstrates:
 
 * upstream→downstream data channel via ctx.shared,
 * multi-event emission (``success`` after writing, ``warning`` if no renames),
-* ``track_extra_file`` for downstream consumers.
+* collision-safe output creation through ``ctx.create_file()``.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -39,13 +38,12 @@ CONFIG_SCHEMA = {
 
 
 def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
-    summary_path = Path(ctx.output_dir) / cfg["filename"]
     lines = [
         cfg["title"],
-        f"is_file: {ctx.is_file}",
-        f"is_dir: {ctx.is_dir}",
+        f"is_file: {ctx.current.is_file}",
+        f"is_dir: {ctx.current.is_dir}",
         f"original_input: {ctx.original_input}",
-        f"working_path: {ctx.working_path}",
+        f"working_path: {ctx.current.path}",
     ]
     renames = ctx.shared.get("renames", [])
     if renames:
@@ -55,14 +53,14 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
     else:
         runtime.log("verify-write-summary", "warning", "无 renames 可写入摘要（缺少上游 rename-path 步骤？）")
 
-    if ctx.extra_files:
-        lines.append("extra_files:")
-        for fp in ctx.extra_files:
-            lines.append(f"- {fp}")
     if ctx.shared:
         lines.append("shared keys: " + ", ".join(sorted(ctx.shared)))
 
-    summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    ctx.track_extra_file(summary_path)
-    runtime.log("verify-write-summary", "success", f"摘要已写入: {summary_path.name}", {"path": str(summary_path)})
+    summary = ctx.create_file(cfg["filename"], "\n".join(lines) + "\n")
+    runtime.log(
+        "verify-write-summary",
+        "success",
+        f"摘要已写入: {summary.name}",
+        {"path": str(summary.path)},
+    )
     return ctx

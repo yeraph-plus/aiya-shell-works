@@ -6,7 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from core import WorkingCopier, build_lines_units, build_path_units, make_unique_path
+from core import (
+    ExecutionWorkspace,
+    InputPlan,
+    WorkingCopier,
+    build_lines_units,
+    build_path_units,
+    make_unique_path,
+)
 from core.exceptions import FileHandlingError
 
 # ---------------------------------------------------------------------------
@@ -79,9 +86,9 @@ def test_copier_default_mode_copies_file_with_source_root(tmp_path: Path) -> Non
     ctx = copier.prepare_path_unit(
         {"path": f, "source_root": src_root},
     )
-    assert ctx.working_path == out / "a.txt"
-    assert ctx.working_path.exists()
-    assert ctx.is_file is True
+    assert ctx.current.path == out / "a.txt"
+    assert ctx.current.path.exists()
+    assert ctx.current.is_file is True
     assert ctx.source_root == src_root
 
 
@@ -91,7 +98,7 @@ def test_copier_direct_mode_no_copy(tmp_path: Path) -> None:
     src.write_text("x", encoding="utf-8")
     copier = WorkingCopier(out, direct_mode=True)
     ctx = copier.prepare_path_unit({"path": src, "source_root": None})
-    assert ctx.working_path == src
+    assert ctx.current.path == src
     # No copy: original is the working path.
     assert not (out / "a.txt").exists()
 
@@ -100,8 +107,8 @@ def test_copier_none_unit_uses_output_dir_as_working(tmp_path: Path) -> None:
     out = tmp_path / "out"
     copier = WorkingCopier(out)
     ctx = copier.prepare_none(shared={"k": "v"})
-    assert ctx.is_dir is True
-    assert ctx.working_path == out and ctx.shared == {"k": "v"}
+    assert ctx.current.is_dir is True
+    assert ctx.current.path == out and ctx.shared == {"k": "v"}
 
 
 def test_copier_line_unit_injects_input_line(tmp_path: Path) -> None:
@@ -110,7 +117,7 @@ def test_copier_line_unit_injects_input_line(tmp_path: Path) -> None:
     ctx = copier.prepare_line({"line": "hello"})
     assert ctx.shared["input_line"] == "hello"
     assert ctx.shared["input_lines"] == ["hello"]
-    assert ctx.working_path == out
+    assert ctx.current.path == out
 
 
 def test_copier_line_batch_injects_input_lines(tmp_path: Path) -> None:
@@ -119,7 +126,7 @@ def test_copier_line_batch_injects_input_lines(tmp_path: Path) -> None:
     ctx = copier.prepare_line({"lines": ["hello", "world"]})
     assert "input_line" not in ctx.shared
     assert ctx.shared["input_lines"] == ["hello", "world"]
-    assert ctx.working_path == out
+    assert ctx.current.path == out
 
 
 def test_copier_make_unique_path_de_dups(tmp_path: Path) -> None:
@@ -145,7 +152,95 @@ def test_copier_copy_collision_parenthetical(tmp_path: Path) -> None:
     copier.prepare_path_unit({"path": src_file, "source_root": src_root})
     # Make a second copy — must be unique:
     ctx2 = copier.prepare_path_unit({"path": src_file, "source_root": src_root})
-    assert " (1)" in ctx2.working_path.name
+    assert " (1)" in ctx2.current.name
+
+
+def test_workspace_file_collision_preserves_existing_output(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+    existing = out / "result.txt"
+    existing.write_text("old", encoding="utf-8")
+
+    ctx = WorkingCopier(out).prepare_none()
+    created = ctx.create_file("result.txt", "new")
+
+    assert created.path == out / "result (1).txt"
+    assert existing.read_text(encoding="utf-8") == "old"
+    assert created.read_text(encoding="utf-8") == "new"
+    assert [entry.name for entry in ctx.files()] == ["result (1).txt"]
+
+
+def test_workspace_directory_collision_renames_whole_top_level(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    existing = out / "bundle"
+    existing.mkdir(parents=True)
+    (existing / "old.txt").write_text("old", encoding="utf-8")
+
+    ctx = WorkingCopier(out).prepare_none()
+    created = ctx.create_directory("bundle")
+    nested = ctx.create_file(created.path / "new.txt", "new")
+
+    assert created.path == out / "bundle (1)"
+    assert nested.path == out / "bundle (1)" / "new.txt"
+    assert (existing / "old.txt").read_text(encoding="utf-8") == "old"
+    assert not (existing / "new.txt").exists()
+
+
+def test_workspace_manifest_refreshes_external_tool_output(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "old.txt").write_text("unrelated", encoding="utf-8")
+    ctx = WorkingCopier(out).prepare_none()
+
+    reserved = ctx.allocate_file("external/tool-result.txt")
+    assert reserved.path.parent.is_dir()
+    reserved.path.write_text("generated", encoding="utf-8")
+    derived = out / "derived.txt"
+    derived.write_text("derived", encoding="utf-8")
+    ctx.adopt(derived)
+    ctx.refresh()
+
+    assert reserved.read_text(encoding="utf-8") == "generated"
+    assert [entry.name for entry in ctx.files()] == ["derived.txt", "tool-result.txt"]
+
+
+def test_workspace_rejects_path_escape_and_invalid_rename(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    ctx = WorkingCopier(out).prepare_none()
+    resource = ctx.create_file("safe.txt", "safe")
+
+    with pytest.raises(FileHandlingError, match="路径越界"):
+        ctx.create_file("../escape.txt", "bad")
+    with pytest.raises(FileHandlingError, match="非法文件名"):
+        resource.rename("../renamed.txt")
+    assert not (tmp_path / "escape.txt").exists()
+
+
+def test_workspace_discard_removes_only_current_unit_entries(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+    keep = out / "keep.txt"
+    keep.write_text("keep", encoding="utf-8")
+    source = tmp_path / "source.txt"
+    source.write_text("source", encoding="utf-8")
+
+    workspace = ExecutionWorkspace(out)
+    unit = workspace.create_unit(1)
+    plan = InputPlan(kind="path", recurse=False, files=(source,), lines=())
+    ctx = workspace.prepare_unit(
+        1,
+        {"path": source, "source_root": None},
+        plan,
+        unit_workspace=unit,
+    )
+    generated = ctx.create_file("generated.txt", "generated")
+    copied = ctx.current.path
+
+    workspace.discard(unit)
+
+    assert keep.read_text(encoding="utf-8") == "keep"
+    assert not copied.exists()
+    assert not generated.path.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +258,7 @@ def test_shared_merges_multiple_files_into_outdir(tmp_path: Path) -> None:
     f2.write_text("x2", encoding="utf-8")
     copier = WorkingCopier(out)
     ctx = copier.prepare_shared_path_unit([f1, f2], recurse=False, shared={})
-    assert ctx.working_path == out
+    assert ctx.current.path == out
     assert (out / "a.txt").exists()
     assert (out / "b.txt").exists()
 
@@ -176,7 +271,7 @@ def test_shared_merges_dir_into_subdir(tmp_path: Path) -> None:
     copier = WorkingCopier(out)
     ctx = copier.prepare_shared_path_unit([src], recurse=False, shared={})
     assert (out / "pics" / "1.jpg").exists()
-    assert ctx.working_path == out
+    assert ctx.current.path == out
 
 
 def test_shared_direct_mode_rejected(tmp_path: Path) -> None:
@@ -205,10 +300,9 @@ def test_batched_path_unit_merges_into_isolated_batch_dir(tmp_path: Path) -> Non
         batch_index=1,
         shared={},
     )
-    assert ctx.working_path == out / "_batch_0001"
-    assert (ctx.working_path / "a.txt").exists()
-    assert (ctx.working_path / "b.txt").exists()
-    assert ctx.output_dir == out
+    assert ctx.current.path == out / "_batch_0001"
+    assert (ctx.current.path / "a.txt").exists()
+    assert (ctx.current.path / "b.txt").exists()
 
 
 def test_batched_path_unit_direct_mode_rejected(tmp_path: Path) -> None:
@@ -221,7 +315,7 @@ def test_batched_path_unit_direct_mode_rejected(tmp_path: Path) -> None:
 
 
 def test_copier_folder_unit_is_dir(tmp_path: Path) -> None:
-    """recurse=False directory unit → working_path is a directory."""
+    """recurse=False directory unit exposes a directory resource."""
 
     out = tmp_path / "out"
     src = tmp_path / "d"
@@ -229,5 +323,5 @@ def test_copier_folder_unit_is_dir(tmp_path: Path) -> None:
     (src / "f.txt").write_text("y", encoding="utf-8")
     copier = WorkingCopier(out)
     ctx = copier.prepare_path_unit({"path": src, "source_root": None})
-    assert ctx.is_dir is True
+    assert ctx.current.is_dir is True
     assert (out / "d").exists()

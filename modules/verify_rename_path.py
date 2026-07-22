@@ -2,13 +2,12 @@
 
 Renames a working copy in place and records the rename in
 ``ctx.shared["renames"]`` so downstream modules (e.g. ``write-summary``) can
-report it via the cross-step data channel.  ``clone(working_path=...)`` is
-used to keep the downstream steps pointed at the new path.
+report it via the cross-step data channel.  The workspace keeps
+``ctx.current`` pointed at the renamed resource.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -34,20 +33,26 @@ CONFIG_SCHEMA = {
 
 
 def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
-    src = Path(ctx.working_path)
-    new = src.with_name(f"{cfg.get('prefix', '')}{src.name}{cfg.get('suffix', '')}")
-    if src == new:
+    src = ctx.current
+    name = f"{cfg.get('prefix', '')}{src.name}{cfg.get('suffix', '')}"
+    if src.name == name:
         runtime.log("verify-rename-path", "hint", f"无变化: {src.name}")
         return ctx
-    src.rename(new)
+    renamed = src.rename(name)
     renames = list(ctx.shared.get("renames", []))
     renames.append(
         {
-            "from": str(src),
-            "to": str(new),
+            "from": str(src.path),
+            "to": str(renamed.path),
             "from_name": src.name,
-            "to_name": new.name,
+            "to_name": renamed.name,
         }
     )
-    runtime.log("verify-rename-path", "success", f"{src.name} -> {new.name}", {"old": str(src), "new": str(new)})
-    return ctx.clone(working_path=new, shared={**ctx.shared, "renames": renames})
+    runtime.log(
+        "verify-rename-path",
+        "success",
+        f"{src.name} -> {renamed.name}",
+        {"old": str(src.path), "new": str(renamed.path)},
+    )
+    ctx.workspace.current_path = renamed.path
+    return ctx.clone(shared={**ctx.shared, "renames": renames})

@@ -39,7 +39,7 @@ from .exceptions import (
     PipelineExecutionError,
     WorkflowValidationError,
 )
-from .files import ExecutionWorkspace, UnitWorkspace, WorkingCopier, units_from_plan, validate_output_separation
+from .files import ExecutionWorkspace, UnitWorkspace, units_from_plan, validate_output_separation
 from .input import InputPlan, resolve_input
 from .module_manager import ModuleDefinition, ModuleManager
 from .runtime import PipelineRuntime
@@ -118,31 +118,25 @@ def build_units(
 
 
 def prepare_context(
-    workflow: WorkflowDefinition,
     plan: InputPlan,
-    copier: WorkingCopier,
+    workspace: ExecutionWorkspace,
     unit: dict[str, Any],
     *,
     shared: Mapping[str, Any] | None,
+    direct_mode: bool = False,
+    move_mode: bool = False,
+    unit_workspace: UnitWorkspace | None = None,
 ) -> PipelineContext:
     """Build a ``PipelineContext`` for a unit."""
-    if "__shared_paths__" in unit:
-        return copier.prepare_shared_path_unit(
-            list(unit["__shared_paths__"]),
-            recurse=unit.get("recurse", plan.recurse),
-            shared=shared,
-        )
-    if "__batched_paths__" in unit:
-        return copier.prepare_batched_path_unit(
-            list(unit["__batched_paths__"]),
-            batch_index=int(unit.get("batch_index", 1)),
-            shared=shared,
-        )
-    if plan.kind == "line" or unit.get("line") is not None or unit.get("lines") is not None:
-        return copier.prepare_line(unit, shared=shared)
-    if plan.kind == "none" or unit.get("path") is None:
-        return copier.prepare_none(shared=shared)
-    return copier.prepare_path_unit(unit, shared=shared)
+    return workspace.prepare_unit(
+        int(unit.get("batch_index", 1)),
+        unit,
+        plan,
+        direct_mode=direct_mode,
+        move_mode=move_mode,
+        shared=shared,
+        unit_workspace=unit_workspace,
+    )
 
 
 def resolve_step_result(
@@ -237,7 +231,6 @@ class PipelineExecutor:
         with ExecutionWorkspace(output_dir) as workspace:
             if self.concurrency > 1 and total > 1 and definition.scope != 0:
                 successful, cancelled = self._execute_parallel(
-                    definition=definition,
                     plan=plan,
                     steps=steps,
                     units=units,
@@ -274,7 +267,7 @@ class PipelineExecutor:
             "results": results,
             "workflow": definition.meta.name,
             "scope": definition.scope,
-            "output_dir": str(Path(output_dir).resolve()),
+            "output_dir": str(workspace.output_dir),
         }
         active_runtime.log(
             "executor",
@@ -307,10 +300,10 @@ class PipelineExecutor:
                 if definition.scope != 0:
                     self.runtime.replace_bus()
                 final_ctx = self._execute_unit(
-                    definition=definition,
                     plan=plan,
                     unit=unit,
                     unit_workspace=unit_workspace,
+                    workspace=workspace,
                     direct_mode=direct_mode,
                     move_mode=move_mode,
                     shared=shared,
@@ -320,27 +313,25 @@ class PipelineExecutor:
                     steps=steps,
                 )
                 workspace.publish(unit_workspace)
-                final_ctx = workspace.map_context(final_ctx, unit_workspace)
                 successful += 1
                 results.append(self._success_result(unit, final_ctx))
                 self._report_progress(idx, total, _unit_display(unit), "completed")
             except PipelineCancelledError:
-                if move_mode:
-                    workspace.publish(unit_workspace)
+                if not move_mode and not direct_mode:
+                    workspace.discard(unit_workspace)
                 self.runtime.log(
                     "executor", "warning", f"cancelled: unit {idx}/{total} ({_unit_display(unit) or '<none>'})"
                 )
                 return successful, True
             except Exception as exc:
-                if move_mode:
-                    workspace.publish(unit_workspace)
+                if not move_mode and not direct_mode:
+                    workspace.discard(unit_workspace)
                 self._record_failure(unit, idx, total, exc, results, errors, self.runtime)
         return successful, False
 
     def _execute_parallel(
         self,
         *,
-        definition: WorkflowDefinition,
         plan: InputPlan,
         steps: list[PreparedStep],
         units: list[dict[str, Any]],
@@ -362,10 +353,10 @@ class PipelineExecutor:
                 runtime = self.runtime.fork()
                 future = pool.submit(
                     self._execute_unit,
-                    definition=definition,
                     plan=plan,
                     unit=unit,
                     unit_workspace=unit_workspace,
+                    workspace=workspace,
                     direct_mode=direct_mode,
                     move_mode=move_mode,
                     shared=shared,
@@ -394,26 +385,25 @@ class PipelineExecutor:
             final_ctx, error, unit, unit_workspace = outcomes[idx]
             if error is None and final_ctx is not None:
                 workspace.publish(unit_workspace)
-                mapped = workspace.map_context(final_ctx, unit_workspace)
-                results.append(self._success_result(unit, mapped))
+                results.append(self._success_result(unit, final_ctx))
                 successful += 1
             elif isinstance(error, PipelineCancelledError):
                 cancelled = True
-                if move_mode:
-                    workspace.publish(unit_workspace)
+                if not move_mode and not direct_mode:
+                    workspace.discard(unit_workspace)
             elif error is not None:
-                if move_mode:
-                    workspace.publish(unit_workspace)
+                if not move_mode and not direct_mode:
+                    workspace.discard(unit_workspace)
                 self._record_failure(unit, idx, total, error, results, errors, self.runtime, report_progress=False)
         return successful, cancelled
 
     def _execute_unit(
         self,
         *,
-        definition: WorkflowDefinition,
         plan: InputPlan,
         unit: dict[str, Any],
         unit_workspace: UnitWorkspace,
+        workspace: ExecutionWorkspace,
         direct_mode: bool,
         move_mode: bool,
         shared: Mapping[str, Any] | None,
@@ -423,8 +413,15 @@ class PipelineExecutor:
         steps: list[PreparedStep],
     ) -> PipelineContext:
         self._raise_if_cancelled(runtime)
-        copier = WorkingCopier(unit_workspace.path, direct_mode=direct_mode, move_mode=move_mode)
-        ctx = prepare_context(definition, plan, copier, unit, shared=shared)
+        ctx = prepare_context(
+            plan,
+            workspace,
+            unit,
+            shared=shared,
+            direct_mode=direct_mode,
+            move_mode=move_mode,
+            unit_workspace=unit_workspace,
+        )
         return self._run_unit(
             ctx=ctx,
             runtime=runtime,
@@ -438,7 +435,7 @@ class PipelineExecutor:
         return {
             "success": True,
             "unit": _unit_display(unit),
-            "working_path": str(ctx.working_path),
+            "working_path": str(ctx.current.path),
             "original_input": _display_name(ctx.original_input),
         }
 
@@ -498,6 +495,7 @@ class PipelineExecutor:
             try:
                 result = step.module_definition.run(current, dict(step.params), runtime)
                 current = self._resolve_step_result(step_name=step.name, result=result, fallback=current)
+                current.refresh()
             except PipelineCancelledError:
                 raise
             except ModuleExecutionError:
