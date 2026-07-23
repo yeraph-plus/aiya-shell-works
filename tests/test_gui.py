@@ -54,9 +54,14 @@ def test_input_panel_supports_auto_and_explicit_atoms(tmp_path: Path, app: QAppl
     assert panel.auto_mode_combo.isVisibleTo(panel)
     assert panel.current_atom == "file"
     panel.add_paths([str(source_file), str(source_dir)])
-    assert len(panel.get_files()) == 2
+    assert panel.get_files() == [str(source_file.resolve())]
 
-    panel.auto_mode_combo.setCurrentIndex(1)
+    panel.auto_mode_combo.setCurrentIndex(panel.auto_mode_combo.findData("folder"))
+    panel.add_paths([str(source_file), str(source_dir)])
+    assert panel.current_atom == "folder"
+    assert panel.get_files() == [str(source_dir.resolve())]
+
+    panel.auto_mode_combo.setCurrentIndex(panel.auto_mode_combo.findData("line"))
     panel.text_editor.setPlainText("alpha\nbeta")
     assert panel.current_atom == "line"
     assert panel.get_files() == []
@@ -65,6 +70,35 @@ def test_input_panel_supports_auto_and_explicit_atoms(tmp_path: Path, app: QAppl
     panel.set_atom("file", False)
     assert panel.add_files_button.isVisibleTo(panel)
     assert not panel.add_folder_button.isVisibleTo(panel)
+    panel.close()
+
+
+def test_input_panel_path_constraints_follow_atom_and_recurse(tmp_path: Path, app: QApplication) -> None:
+    panel = InputPanel()
+    source_file = tmp_path / "input.txt"
+    source_file.write_text("x", encoding="utf-8")
+    source_dir = tmp_path / "folder"
+    source_dir.mkdir()
+
+    panel.set_atom("file", False)
+    panel.add_paths([str(source_file), str(source_dir)])
+    assert panel.get_files() == [str(source_file.resolve())]
+
+    panel.set_atom("file", True)
+    panel.add_paths([str(source_file), str(source_dir)])
+    assert panel.get_files() == [str(source_file.resolve()), str(source_dir.resolve())]
+
+    panel.set_atom("file", False)
+    assert panel.get_files() == []
+
+    panel.set_atom("folder", False)
+    panel.add_paths([str(source_file), str(source_dir)])
+    assert panel.get_files() == [str(source_dir.resolve())]
+
+    panel.set_atom("none", False)
+    assert panel.has_input()
+    assert panel.get_files() == []
+    assert panel.get_lines() == ""
     panel.close()
 
 

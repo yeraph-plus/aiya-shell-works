@@ -171,7 +171,8 @@ class InputPanel(QWidget):
         self.remove_button = QPushButton("删除选中")
         self.clear_button = QPushButton("清空")
         self.auto_mode_combo = QComboBox()
-        self.auto_mode_combo.addItem("路径输入", "file")
+        self.auto_mode_combo.addItem("文件输入", "file")
+        self.auto_mode_combo.addItem("文件夹输入", "folder")
         self.auto_mode_combo.addItem("文本输入", "line")
         self.auto_mode_combo.addItem("无输入", "none")
         self.auto_mode_combo.hide()
@@ -208,13 +209,19 @@ class InputPanel(QWidget):
     def set_atom(self, atom: str | None, recurse: bool) -> None:
         """Set the input atom type and configure the UI accordingly."""
         declared_atom = atom if atom in self._VALID_ATOMS else None
-        if declared_atom != self._declared_atom:
+        old_mode_key = self._mode_key(self._declared_atom, self._recurse)
+        new_mode_key = self._mode_key(declared_atom, recurse)
+        if new_mode_key != old_mode_key:
             self.clear()
         self._declared_atom = declared_atom
         self._recurse = recurse
         self.auto_mode_combo.setVisible(declared_atom is None)
         self._atom = declared_atom or str(self.auto_mode_combo.currentData())
         self._apply_atom()
+
+    @staticmethod
+    def _mode_key(atom: str | None, recurse: bool) -> tuple[str | None, bool]:
+        return (atom, recurse if atom in {None, "file"} else False)
 
     def _on_auto_mode_changed(self, _index: int) -> None:
         if self._declared_atom is not None:
@@ -238,9 +245,8 @@ class InputPanel(QWidget):
         self.text_editor.setEnabled(wants_text)
         self._none_frame.setVisible(atom == "none")
 
-        auto_path = self._declared_atom is None and atom == "file"
         allow_files = atom == "file"
-        allow_folders = atom == "folder" or auto_path or (atom == "file" and self._recurse)
+        allow_folders = atom == "folder" or (atom == "file" and self._recurse)
         self.add_files_button.setVisible(allow_files)
         self.add_folder_button.setVisible(allow_folders)
         self.remove_button.setVisible(wants_path)
@@ -258,9 +264,8 @@ class InputPanel(QWidget):
         """Enable/disable controls based on execution state."""
         atom = self._atom
         is_path_input = atom in {"file", "folder"}
-        auto_path = self._declared_atom is None and atom == "file"
         allow_files = atom == "file"
-        allow_folders = atom == "folder" or auto_path or (atom == "file" and self._recurse)
+        allow_folders = atom == "folder" or (atom == "file" and self._recurse)
 
         self.auto_mode_combo.setEnabled(not running)
         self.add_files_button.setEnabled(not running and allow_files)
@@ -326,25 +331,32 @@ class InputPanel(QWidget):
             return
 
         existing = {self.input_list.item(i).data(Qt.UserRole) for i in range(self.input_list.count())}
-        resolved = [Path(p).resolve() for p in paths]
+        valid_paths: list[str] = []
+        invalid_paths: list[str] = []
 
-        if self._declared_atom == "folder":
-            valid_paths = []
-            invalid_paths = []
-            for raw_path in paths:
-                p = Path(raw_path).resolve()
+        for raw_path in paths:
+            p = Path(raw_path).resolve()
+            if self._atom == "folder":
                 result = InputInspector.validate_directory(p)
                 if not result.is_valid:
                     invalid_paths.append(f"{result.path}: {result.error}")
                     continue
-                normalized = str(p)
+                valid_candidates = [p]
+            elif self._recurse:
+                valid_candidates, invalid = InputInspector.validate_path_input([p])
+                invalid_paths.extend(f"{inv.path}: {inv.error}" for inv in invalid)
+            else:
+                result = InputInspector.validate_file(p)
+                if not result.is_valid:
+                    invalid_paths.append(f"{result.path}: {result.error}")
+                    continue
+                valid_candidates = [p]
+
+            for valid_path in valid_candidates:
+                normalized = str(valid_path)
                 if normalized not in existing:
                     valid_paths.append(normalized)
                     existing.add(normalized)
-        else:
-            valid, invalid = InputInspector.validate_path_input(resolved)
-            valid_paths = [str(v) for v in valid]
-            invalid_paths = [f"{inv.path}: {inv.error}" for inv in invalid]
 
         added_count = 0
         for path in valid_paths:
@@ -374,8 +386,7 @@ class InputPanel(QWidget):
 
     def _choose_folder(self) -> None:
         """Open folder dialog to select input folder."""
-        auto_path = self._declared_atom is None and self._atom == "file"
-        if self._atom == "file" and not (auto_path or self._recurse):
+        if self._atom == "file" and not self._recurse:
             return
         if self._atom not in {"file", "folder"}:
             return
