@@ -39,6 +39,12 @@ CONFIG_SCHEMA = {
             "default": "",
             "description": "Path to mock_tool.bat (.sh). Empty → auto-detect by platform under ../resources.",
         },
+        "timeout_seconds": {
+            "type": "int",
+            "title": "Timeout seconds",
+            "default": 30,
+            "min": 1,
+        },
     },
 }
 
@@ -65,12 +71,10 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
         raise FileNotFoundError(f"mock tool not found: {tool}")
 
     cmd = (
-        [str(tool), str(ctx.current.path)]
-        if sys.platform == "win32"
-        else ["/bin/sh", str(tool), str(ctx.current.path)]
+        [str(tool), str(ctx.current.path)] if sys.platform == "win32" else ["/bin/sh", str(tool), str(ctx.current.path)]
     )
     runtime.log("verify-run-external-tool", "hint", f"spawn: {' '.join(cmd)}")
-    result = runtime.spawn(cmd)
+    result = runtime.spawn(cmd, timeout=float(cfg["timeout_seconds"]))
     if not result.is_success:
         raise RuntimeError(f"external tool returned exit code {result.exit_code}")
     sidecar_path = Path(f"{ctx.current.path}.done")

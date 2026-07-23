@@ -35,6 +35,8 @@ CONFIG_SCHEMA = {
 
 def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
     src = ctx.current
+    old_path = src.path
+    old_name = src.name
     name = f"{cfg.get('prefix', '')}{src.name}{cfg.get('suffix', '')}"
     if src.name == name:
         runtime.log("verify-rename-path", "hint", f"无变化: {src.name}")
@@ -43,16 +45,17 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
     renames = list(ctx.shared.get("renames", []))
     renames.append(
         {
-            "from": str(src.path),
+            "from": str(old_path),
             "to": str(renamed.path),
-            "from_name": src.name,
+            "from_name": old_name,
             "to_name": renamed.name,
         }
     )
     runtime.log(
         "verify-rename-path",
         "success",
-        f"{src.name} -> {renamed.name}",
-        {"old": str(src.path), "new": str(renamed.path)},
+        f"{old_name} -> {renamed.name}",
+        {"old": str(old_path), "new": str(renamed.path)},
     )
-    return ctx.clone(shared={**ctx.shared, "renames": renames})
+    ctx.shared["renames"] = renames
+    return ctx

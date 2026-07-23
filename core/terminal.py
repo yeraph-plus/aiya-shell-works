@@ -14,16 +14,24 @@ import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any, Protocol
 
+from .events import PipelineEventType
 from .exceptions import TerminalSpawnError
-
-if TYPE_CHECKING:
-    from .runtime import PipelineRuntime
 
 LOGGER = logging.getLogger(__name__)
 
 _ANSI_STRIP_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b[@-_]")
+
+
+class EventEmitter(Protocol):
+    def log(
+        self,
+        slug: str,
+        event_type: PipelineEventType,
+        text: str,
+        data: dict[str, Any] | None = None,
+    ) -> Any: ...
 
 
 @dataclass(slots=True, frozen=True)
@@ -58,6 +66,12 @@ class TerminalSessionRegistry:
             sessions = list(self._sessions.values())
             self._sessions.clear()
         for session in sessions:
+            session.close()
+
+    def terminate_all(self) -> None:
+        with self._lock:
+            sessions = list(self._sessions.values())
+        for session in sessions:
             session.terminate()
 
     def __len__(self) -> int:
@@ -72,7 +86,7 @@ class TerminalSession:
         self,
         cmd: Sequence[str] | str,
         *,
-        runtime: PipelineRuntime,
+        runtime: EventEmitter,
         cwd: str | Path | None = None,
         env: dict[str, str] | None = None,
         exit_pattern: str | None = None,
@@ -193,6 +207,24 @@ class TerminalSession:
                 process.terminate()
         except (OSError, ProcessLookupError):
             pass
+
+    def close(self, timeout: float = 2.0) -> None:
+        if not self._started or self._finished.is_set():
+            return
+        self.terminate()
+        if self._finished.wait(timeout):
+            return
+        process = self._process
+        try:
+            if self._backend == "winpty":
+                process.terminate(force=True)
+            elif os.name == "posix" and isinstance(process, subprocess.Popen):
+                os.killpg(process.pid, signal.SIGKILL)
+            elif isinstance(process, subprocess.Popen):
+                process.kill()
+        except (OSError, ProcessLookupError):
+            pass
+        self._finished.wait(timeout)
 
     def _argv(self) -> list[str]:
         if self.shell:
@@ -379,5 +411,5 @@ class TerminalSession:
         return self.cmd if isinstance(self.cmd, str) else shlex.join(self.cmd)
 
 
-def get_session(runtime: PipelineRuntime, session_id: str) -> TerminalSession | None:
+def get_session(runtime: Any, session_id: str) -> TerminalSession | None:
     return runtime.sessions.get(session_id)

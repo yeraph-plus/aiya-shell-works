@@ -32,14 +32,15 @@ def collect_file_targets(
     if context.current.is_file and all(entry.path != context.current.path for entry in files):
         files.insert(0, context.current)
     if extensions is not None:
-        files = [entry for entry in files if entry.path.suffix.lower() in extensions]
+        normalized = frozenset(extension if extension.startswith(".") else f".{extension}" for extension in extensions)
+        files = [entry for entry in files if entry.path.suffix.lower() in normalized]
     return files
 
 
 def parse_extension_set(raw: str) -> frozenset[str]:
     """Split whitespace-delimited *raw* into a lower-cased extension set."""
 
-    return frozenset(e.strip().lower().lstrip(".") for e in raw.split() if e.strip())
+    return frozenset(f".{extension.strip().lower().lstrip('.')}" for extension in raw.split() if extension.strip())
 
 
 def ensure_pty_available(runtime: PipelineRuntime, slug: str) -> bool:

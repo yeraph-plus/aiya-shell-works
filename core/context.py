@@ -87,17 +87,3 @@ class PipelineContext:
 
     def publish(self) -> None:
         self.workspace.publish()
-
-    def clone(self, **changes: Any) -> PipelineContext:
-        allowed = {"workspace", "original_input", "shared", "source_root"}
-        invalid = set(changes) - allowed
-        if invalid:
-            raise TypeError(f"clone() 不支持字段: {', '.join(sorted(invalid))}")
-        payload = {
-            "workspace": self.workspace,
-            "original_input": self.original_input,
-            "shared": dict(self.shared),
-            "source_root": self.source_root,
-        }
-        payload.update(changes)
-        return PipelineContext(**payload)

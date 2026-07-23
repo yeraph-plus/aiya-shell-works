@@ -104,22 +104,22 @@ def _parse_counter_params(params_str: str) -> dict[str, int]:
         if not part:
             continue
         if "=" in part:
-            key, val = part.split("=", 1)
+            key, raw_value = part.split("=", 1)
             try:
-                result[key.strip()] = int(val.strip())
+                result[key.strip()] = int(raw_value.strip())
             except ValueError:
                 pass
         else:
             try:
-                val = int(part)
+                value = int(part)
             except ValueError:
                 continue
             if positional_index == 0:
-                result["increment"] = val
+                result["increment"] = value
             elif positional_index == 1:
-                result["padding"] = val
+                result["padding"] = value
             elif positional_index == 2:
-                result["start"] = val
+                result["start"] = value
             positional_index += 1
     return result
 
@@ -241,7 +241,7 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
         expanded = _expand_template(replace_template, counter_state, dt)
 
         if use_regex:
-            new_stem = re.sub(match_pattern, expanded, target_str)
+            new_stem = re.sub(match_pattern, expanded, target_str, count=1)
         else:
             if match_pattern:
                 new_stem = target_str.replace(match_pattern, expanded)
@@ -272,7 +272,7 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
     if renames:
         existing = list(ctx.shared.get("renames", []))
         existing.extend(renames)
-        ctx = ctx.clone(shared={**ctx.shared, "renames": existing})
+        ctx.shared["renames"] = existing
 
     if renamed_count > 0:
         runtime.log(

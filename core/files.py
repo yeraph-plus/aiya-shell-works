@@ -12,13 +12,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from shutil import copy2, copytree, move, rmtree
 from threading import RLock
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from .exceptions import FileHandlingError
 from .input import InputPlan
-
-if TYPE_CHECKING:
-    from .context import PipelineContext
+from .planning import ExecutionUnit
 
 
 def _unique_path(target: Path) -> Path:
@@ -140,6 +138,14 @@ class WorkspaceFile:
         self.workspace.delete(self.path)
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedWorkspaceUnit:
+    workspace: UnitWorkspace
+    original_input: Path | None = None
+    source_root: Path | None = None
+    input_lines: tuple[str, ...] = ()
+
+
 @dataclass(slots=True)
 class UnitWorkspace:
     """One unit's isolated manifest over a real output-backed workspace."""
@@ -151,6 +157,7 @@ class UnitWorkspace:
     referenced_roots: dict[Path, Path] = field(default_factory=dict)
     reserved_paths: set[Path] = field(default_factory=set, repr=False)
     allocation_lock: RLock = field(default_factory=RLock, repr=False)
+    execution: ExecutionWorkspace | None = field(default=None, repr=False)
     _entries: dict[Path, WorkspaceFile] = field(default_factory=dict, init=False, repr=False)
     _lock: RLock = field(default_factory=RLock, init=False, repr=False)
     _module_access: str = field(default="read_write", init=False, repr=False)
@@ -260,6 +267,8 @@ class UnitWorkspace:
                 return
             candidate = root / relative.parts[0]
             self.reserved_paths.add(candidate)
+        if self.execution is not None:
+            self.execution.claim_owned(self, candidate)
         if any(candidate == owned or candidate.is_relative_to(owned) for owned in self.owned_roots):
             return
         self.owned_roots = {owned for owned in self.owned_roots if not owned.is_relative_to(candidate)}
@@ -268,6 +277,8 @@ class UnitWorkspace:
     def _unregister_owned(self, path: Path) -> None:
         candidate = path.resolve(strict=False)
         self.owned_roots = {owned for owned in self.owned_roots if owned.resolve(strict=False) != candidate}
+        if self.execution is not None:
+            self.execution.release_owned(self, candidate)
 
     def _register_reference(self, path: Path, relative: Path) -> None:
         candidate = path.resolve(strict=False)
@@ -290,6 +301,8 @@ class UnitWorkspace:
 
     def file(self, path: str | Path) -> WorkspaceFile:
         resolved = self._ensure_inside(path)
+        if resolved != self.root.resolve() and not self._is_tracked(resolved):
+            raise FileHandlingError(f"路径未登记到当前工作区: {resolved}")
         entry = self._entries.get(resolved)
         if entry is None:
             entry = WorkspaceFile(self, resolved)
@@ -300,22 +313,43 @@ class UnitWorkspace:
         resolved = self._ensure_inside(path)
         if not resolved.exists() and not resolved.is_symlink():
             raise FileHandlingError(f"当前资源不存在: {resolved}")
+        self.refresh()
+        if resolved != self.root.resolve() and not self._is_tracked(resolved):
+            raise FileHandlingError(f"当前资源未登记到工作区: {resolved}")
         self.current_path = resolved
         return self.file(resolved)
 
     def refresh(self) -> None:
         with self._lock:
-            self._entries = {}
+            previous = self._entries
+            refreshed: dict[Path, WorkspaceFile] = {}
+            root = self.root.resolve(strict=False)
+            root_entry = previous.get(root)
+            refreshed[root] = root_entry or WorkspaceFile(self, root)
             roots = list(self.owned_roots) + list(self.referenced_roots)
             for tracked in roots:
                 if not tracked.exists() and not tracked.is_symlink():
                     continue
                 resolved = tracked.resolve(strict=False)
-                self._entries[resolved] = WorkspaceFile(self, resolved)
+                refreshed[resolved] = previous.get(resolved) or WorkspaceFile(self, resolved)
                 if tracked.is_dir():
                     for item in tracked.rglob("*"):
                         resolved_item = item.resolve(strict=False)
-                        self._entries[resolved_item] = WorkspaceFile(self, resolved_item)
+                        refreshed[resolved_item] = previous.get(resolved_item) or WorkspaceFile(self, resolved_item)
+            self._entries = refreshed
+            current = self.current_path.resolve(strict=False)
+            if current != root and current not in refreshed:
+                self.current_path = root
+
+    def _is_tracked(self, path: Path) -> bool:
+        candidate = path.resolve(strict=False)
+        if candidate in self._entries:
+            return True
+        return any(
+            candidate == root.resolve(strict=False)
+            or (root.is_dir() and candidate.is_relative_to(root.resolve(strict=False)))
+            for root in [*self.owned_roots, *self.referenced_roots]
+        )
 
     def entries(self, recursive: bool = True) -> list[WorkspaceFile]:
         self.refresh()
@@ -389,16 +423,26 @@ class UnitWorkspace:
             )
             if target != top_level and not owns_top_level and top_level not in self.reserved_paths:
                 raise FileHandlingError(f"不能把既有顶层目录中的未分配路径加入工作区: {target}")
+        if self.execution is not None:
+            self.execution.claim_adopted(self, target)
         self._register_owned(target)
         self.reserved_paths.discard(target)
         self.refresh()
         return self.file(target)
 
     def read_text(self, source: str | Path, **kwargs: Any) -> str:
-        return self._ensure_inside(source).read_text(**kwargs)
+        target = self._ensure_inside(source)
+        self.refresh()
+        if target != self.root.resolve() and not self._is_tracked(target):
+            raise FileHandlingError(f"路径未登记到当前工作区: {target}")
+        return target.read_text(**kwargs)
 
     def read_bytes(self, source: str | Path) -> bytes:
-        return self._ensure_inside(source).read_bytes()
+        target = self._ensure_inside(source)
+        self.refresh()
+        if target != self.root.resolve() and not self._is_tracked(target):
+            raise FileHandlingError(f"路径未登记到当前工作区: {target}")
+        return target.read_bytes()
 
     def write_text(self, target: str | Path, data: str, **kwargs: Any) -> WorkspaceFile:
         destination = self._ensure_mutable(target)
@@ -456,6 +500,15 @@ class UnitWorkspace:
         if src.resolve(strict=False) in {owned.resolve(strict=False) for owned in self.owned_roots}:
             self._unregister_owned(src)
         self._register_owned(moved)
+        remapped: dict[Path, WorkspaceFile] = {}
+        for entry_path, entry in self._entries.items():
+            if entry_path == src or entry_path.is_relative_to(src):
+                new_path = moved / entry_path.relative_to(src)
+                entry.path = new_path
+                remapped[new_path] = entry
+            else:
+                remapped[entry_path] = entry
+        self._entries = remapped
         if previous_current == src or previous_current.is_relative_to(src):
             self.current_path = moved / previous_current.relative_to(src)
         self.refresh()
@@ -473,6 +526,9 @@ class UnitWorkspace:
             target.unlink(missing_ok=True)
         self._unregister_owned(target)
         self.reserved_paths.discard(target)
+        current = self.current_path.resolve(strict=False)
+        if current == target or current.is_relative_to(target):
+            self.current_path = self.root.resolve()
         self.refresh()
 
     def publish(self) -> None:
@@ -488,7 +544,8 @@ class ExecutionWorkspace:
         self.root = self.output_dir
         self._lock = RLock()
         self._reservations: set[Path] = set()
-        self._units: list[UnitWorkspace] = []
+        self._baseline_roots = {path.resolve(strict=False) for path in self.root.iterdir()}
+        self._claims: dict[Path, int | None] = {}
 
     def create_unit(self, index: int) -> UnitWorkspace:
         # Kept as a compatibility entry point; input is attached by prepare_unit.
@@ -498,38 +555,79 @@ class ExecutionWorkspace:
             current_path=self.root,
             reserved_paths=self._reservations,
             allocation_lock=self._lock,
+            execution=self,
         )
-        with self._lock:
-            self._units.append(unit)
+        unit.refresh()
         return unit
+
+    def _top_level(self, path: Path) -> Path | None:
+        candidate = path.resolve(strict=False)
+        if not candidate.is_relative_to(self.root):
+            return None
+        relative = candidate.relative_to(self.root)
+        if not relative.parts:
+            return None
+        return self.root / relative.parts[0]
+
+    def claim_owned(self, unit: UnitWorkspace, path: Path) -> None:
+        top_level = self._top_level(path)
+        if top_level is None:
+            return
+        with self._lock:
+            if top_level in self._claims and self._claims[top_level] != unit.index:
+                raise FileHandlingError(f"产物已属于其他处理单元: {top_level}")
+            self._claims[top_level] = unit.index
+            self._reservations.add(top_level)
+
+    def claim_adopted(self, unit: UnitWorkspace, path: Path) -> None:
+        top_level = self._top_level(path)
+        if top_level is None:
+            if unit._is_owned(path):
+                return
+            raise FileHandlingError(f"不能登记工作区外产物: {path}")
+        with self._lock:
+            if any(
+                top_level == owned.resolve(strict=False) or top_level.is_relative_to(owned.resolve(strict=False))
+                for owned in unit.owned_roots
+            ):
+                return
+            if top_level in self._baseline_roots:
+                raise FileHandlingError(f"不能接管执行前已存在的产物: {top_level}")
+            if top_level in self._claims:
+                raise FileHandlingError(f"不能接管其他处理单元的产物: {top_level}")
+            self._claims[top_level] = unit.index
+            self._reservations.add(top_level)
+
+    def release_owned(self, unit: UnitWorkspace, path: Path) -> None:
+        top_level = self._top_level(path)
+        if top_level is None:
+            return
+        with self._lock:
+            if self._claims.get(top_level) == unit.index:
+                self._claims.pop(top_level, None)
+                for reserved in list(self._reservations):
+                    if reserved == top_level or reserved.is_relative_to(top_level):
+                        self._reservations.discard(reserved)
 
     def prepare_unit(
         self,
         index: int,
-        unit: dict[str, Any],
-        plan: InputPlan,
+        unit: ExecutionUnit,
         *,
         direct_mode: bool = False,
         move_mode: bool = False,
         reference_mode: bool = False,
         shared: Mapping[str, Any] | None = None,
         unit_workspace: UnitWorkspace | None = None,
-    ) -> PipelineContext:
-        from .context import PipelineContext
-
+    ) -> PreparedWorkspaceUnit:
         workspace = unit_workspace or self.create_unit(index)
-        payload = dict(shared or {})
-        if "lines" in unit or "line" in unit or plan.kind == "line":
-            lines = [str(value) for value in (unit.get("lines") or [unit.get("line", "")])]
-            payload["input_lines"] = lines
-            if len(lines) == 1:
-                payload["input_line"] = lines[0]
-            return PipelineContext(workspace=workspace, original_input=None, shared=payload)
-        if unit.get("path") is None and "__shared_paths__" not in unit and "__batched_paths__" not in unit:
-            return PipelineContext(workspace=workspace, original_input=None, shared=payload)
+        if unit.kind == "line":
+            return PreparedWorkspaceUnit(workspace=workspace, input_lines=unit.lines)
+        if unit.kind == "none":
+            return PreparedWorkspaceUnit(workspace=workspace)
 
-        is_shared = "__shared_paths__" in unit
-        is_batched = "__batched_paths__" in unit
+        is_shared = unit.layout == "shared"
+        is_batched = unit.layout == "batch"
         if direct_mode and is_shared:
             raise FileHandlingError("scope=0 与 direct_mode 不兼容：shared 需要 output_dir 形成合并树。")
         if direct_mode and is_batched:
@@ -546,24 +644,19 @@ class ExecutionWorkspace:
             workspace.current_path = batch_root
             workspace.owned_roots.add(batch_root.resolve())
             workspace.reserved_paths.add(batch_root.resolve())
+            self.claim_owned(workspace, batch_root)
 
-        paths: list[dict[str, Any]]
-        if is_shared:
-            paths = [{"path": path, "source_root": None} for path in unit["__shared_paths__"]]
-        elif is_batched:
-            paths = list(unit["__batched_paths__"])
-        else:
-            paths = [unit]
+        paths = unit.paths
         first: Path | None = None
         original_source: Path | None = None
         for item in paths:
-            source = Path(item["path"]).resolve()
+            source = item.path.resolve()
             if not source.exists():
                 raise FileHandlingError(f"输入路径不存在: {source}")
             if direct_mode:
                 destination = source
             elif reference_mode:
-                source_root = Path(item["source_root"]) if item.get("source_root") else None
+                source_root = item.source_root.resolve() if item.source_root else None
                 if source_root is not None:
                     source_root = source_root.resolve()
                     try:
@@ -575,7 +668,7 @@ class ExecutionWorkspace:
                 destination = source
                 workspace._register_reference(source, relative)
             else:
-                source_root = Path(item["source_root"]) if item.get("source_root") else None
+                source_root = item.source_root.resolve() if item.source_root else None
                 if source_root is not None:
                     source_root = source_root.resolve()
                     try:
@@ -607,18 +700,25 @@ class ExecutionWorkspace:
         workspace.current_path = workspace.root if is_shared or is_batched else (first or workspace.root)
         workspace.refresh()
         source_root = None
-        if len(paths) == 1 and paths[0].get("source_root"):
-            source_root = Path(paths[0]["source_root"])
+        if len(paths) == 1 and paths[0].source_root:
+            source_root = paths[0].source_root
         original_input = None if is_shared or is_batched else original_source
-        return PipelineContext(
+        return PreparedWorkspaceUnit(
             workspace=workspace,
             original_input=original_input,
-            shared=payload,
             source_root=source_root,
         )
 
     def publish(self, unit: UnitWorkspace) -> None:
         unit.publish()
+        with self._lock:
+            for root in unit.owned_roots:
+                top_level = self._top_level(root)
+                if top_level is not None and self._claims.get(top_level) == unit.index:
+                    self._claims[top_level] = None
+                    for reserved in list(self._reservations):
+                        if reserved == top_level or reserved.is_relative_to(top_level):
+                            self._reservations.discard(reserved)
 
     def discard(self, unit: UnitWorkspace) -> None:
         for root in sorted(unit.owned_roots, key=lambda path: len(path.parts), reverse=True):
@@ -626,10 +726,16 @@ class ExecutionWorkspace:
                 root.relative_to(self.root)
             except ValueError:
                 continue
+            top_level = self._top_level(root)
+            if top_level is not None and self._claims.get(top_level) != unit.index:
+                continue
             if root.is_dir() and not root.is_symlink():
                 rmtree(root, ignore_errors=True)
             else:
                 root.unlink(missing_ok=True)
+            if top_level is not None:
+                self._claims.pop(top_level, None)
+                self._reservations.discard(top_level)
         unit.owned_roots.clear()
         unit.referenced_roots.clear()
         unit.refresh()
@@ -643,66 +749,3 @@ class ExecutionWorkspace:
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         self.close()
-
-
-class WorkingCopier:
-    """Compatibility facade for callers that still prepare a single unit."""
-
-    def __init__(self, output_dir: str | Path, *, direct_mode: bool = False, move_mode: bool = False) -> None:
-        self.workspace = ExecutionWorkspace(output_dir)
-        self.direct_mode = direct_mode
-        self.move_mode = move_mode
-
-    def prepare_none(self, *, shared: Mapping[str, Any] | None = None):
-        plan = InputPlan(kind="none", recurse=False, files=(), lines=())
-        return self.workspace.prepare_unit(1, {"path": None}, plan, shared=shared)
-
-    def prepare_line(self, unit: dict[str, Any], *, shared: Mapping[str, Any] | None = None):
-        lines = tuple(unit.get("lines") or [unit.get("line", "")])
-        plan = InputPlan(kind="line", recurse=False, files=(), lines=lines)
-        return self.workspace.prepare_unit(1, unit, plan, shared=shared)
-
-    def prepare_path_unit(self, unit: dict[str, Any], *, shared: Mapping[str, Any] | None = None):
-        plan = InputPlan(kind="path", recurse=False, files=(Path(unit["path"]),), lines=())
-        return self.workspace.prepare_unit(
-            1,
-            unit,
-            plan,
-            direct_mode=self.direct_mode,
-            move_mode=self.move_mode,
-            shared=shared,
-        )
-
-    def prepare_shared_path_unit(
-        self,
-        paths: list[Path],
-        *,
-        recurse: bool,
-        shared: Mapping[str, Any] | None = None,
-    ):
-        plan = InputPlan(kind="path", recurse=recurse, files=tuple(paths), lines=())
-        return self.workspace.prepare_unit(
-            1,
-            {"__shared_paths__": paths},
-            plan,
-            direct_mode=self.direct_mode,
-            move_mode=self.move_mode,
-            shared=shared,
-        )
-
-    def prepare_batched_path_unit(
-        self,
-        units: list[dict[str, Any]],
-        *,
-        batch_index: int,
-        shared: Mapping[str, Any] | None = None,
-    ):
-        plan = InputPlan(kind="path", recurse=False, files=tuple(Path(item["path"]) for item in units), lines=())
-        return self.workspace.prepare_unit(
-            batch_index,
-            {"__batched_paths__": units},
-            plan,
-            direct_mode=self.direct_mode,
-            move_mode=self.move_mode,
-            shared=shared,
-        )

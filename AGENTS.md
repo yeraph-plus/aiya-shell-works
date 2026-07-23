@@ -11,10 +11,10 @@
 | 项 | 值 |
 |---|---|
 | 项目名称 | Shell Worker Platform |
-| 版本 | `CORE_VERSION = "2.0.0"`（`core/__init__.py`） |
+| 版本 | `CORE_VERSION = "2.0.0"`（`core/version.py`，由 `core/__init__.py` 导出） |
 | Python 要求 | 3.11+ |
 | 入口 | `main.py`（命令行，无 PySide6）+ `main_gui.pyw`（可选桌面） |
-| 运行时核心依赖 | PyYAML, watchdog ≥ 6.0, croniter ≥ 6.0 |
+| 运行时依赖 | PyYAML, watchdog ≥ 6.0, croniter ≥ 6.0, Pillow, pillow-avif-plugin |
 | 可选 GUI 依赖 | PySide6 ≥ 6.9 |
 | 可选 Windows PTY | pywinpty ≥ 2.0 |
 | Linux/macOS PTY | stdlib `pty`（无第三方依赖） |
@@ -105,7 +105,7 @@
 shell-worker/
 ├── AGENTS.md                    # 本文件
 ├── README.md
-├── pyproject.toml              # 含 optional extras: gui / win / image / dev
+├── pyproject.toml              # 常规依赖 + optional extras: gui / win / dev
 ├── main.py                     # argparse CLI 入口（无 PySide6）
 ├── main_gui.pyw                # 可选 PySide6 GUI 入口
 │
@@ -117,6 +117,7 @@ shell-worker/
 │   ├── runtime.py              # PipelineRuntime（EventBus + TerminalSessionRegistry + spawn + log sink + 取消信号）
 │   ├── terminal.py             # 跨平台 PTY：winpty / pty / subprocess fallback
 │   ├── input.py                # InputPlan 解析
+│   ├── planning.py             # executor/files 间强类型 ExecutionUnit/PathInput
 │   ├── input_inspector.py      # GUI 前期路径校验（InputInspector，不展开目录）
 │   ├── files.py                # ExecutionWorkspace + UnitWorkspace + WorkspaceFile + 单元构建
 │   ├── config_schema.py        # 8 种参数类型校验
@@ -124,7 +125,8 @@ shell-worker/
 │   ├── workflow_loader.py      # YAML 加载/保存/校验（atom 可选 GUI 元数据；含 VALID_SCOPES）
 │   ├── executor.py             # PipelineExecutor，scope=0/1/N 分发 + unit bus 隔离 + 取消检查
 │   ├── scheduler.py            # WorkflowScheduler：并发/监听/定时调度壳
-│   └── tools.py                # 公用模块助手（collect_file_targets 按工作区清单路由）
+│   ├── tools.py                # 公用模块助手（collect_file_targets 按工作区清单路由）
+│   └── version.py              # 单一 CORE_VERSION 来源
 │
 ├── gui/                        # 可选桌面层（PySide6）
 │   ├── __init__.py
@@ -143,18 +145,21 @@ shell-worker/
 │       ├── input_panel.py
 │       └── terminal_window.py
 │
-├── modules/                    # 内置模块，统一使用 WorkspaceFile API
-│   ├── verify_create_text_file.py     # 无输入创建文件
-│   ├── verify_rename_path.py          # 重命名 + 写 ctx.shared["renames"]
-│   ├── verify_write_summary.py        # 读 ctx.shared["renames"] 写摘要
-│   ├── cycle_counter.py               # scope=0 清单计数
-│   ├── verify_line_echo.py            # 读 ctx.shared["input_line"]
-│   └── verify_run_external_tool.py    # runtime.spawn + adopt
+├── modules/                    # 19 个内置模块，统一使用 WorkspaceFile API
+│   ├── verify_*.py / cycle_counter.py # 默认内核验收模块
+│   ├── delete_files.py / flatten_folder.py / normalize_extensions.py
+│   ├── gallery_count.py / gallery_rename.py / rename_by_pattern.py
+│   ├── extract_archive.py / image_transcode.py / image_resize_watermark.py
+│   ├── exiftool_clean.py               # 需要 ExifTool
+│   └── ffmpeg_convert.py / pack_rar.py / strip_attributes.py  # 仅 Windows
 │
-├── workflows/                  # 示例 YAML
-│   └── example-*.yaml
+├── workflows/                  # 8 个内置工作流
+│   ├── example-*.yaml          # 6 个默认验收工作流
+│   ├── 图集批处理.yaml
+│   └── 图集预览提取.yaml
 │
 ├── resources/
+│   ├── install_*.ps1          # Windows 外部工具安装脚本
 │   ├── mock_tool.bat          # 验收与 demo 用 Windows
 │   └── mock_tool.sh           # Linux/macOS
 │
@@ -171,9 +176,11 @@ shell-worker/
 │   ├── test_config_schema.py
 │   ├── test_scheduler.py
 │   ├── test_cli.py
+│   ├── test_builtin_modules.py
 │   └── test_migration_repairs.py
 │
 └── scripts/
+    ├── check_coverage.py      # core 整体与关键模块覆盖率门禁
     └── verify.py              # 端到端验收（subprocess 调 main.py，跨平台）
 ```
 
@@ -192,8 +199,8 @@ shell-worker/
               ┌────────┴─────────┬────────────────────┐
               ▼                  ▼                    ▼
         _prepare_steps      _build_units          per-unit：
-        (平台/access/参数)   (path/line/none +    runtime.replace_bus()
-                             合并树/引用清单)     listener 自动迁移
+        (平台/access/参数)   (ExecutionUnit +     runtime.replace_bus()
+                             强类型路径/行载荷)   listener 自动迁移
               │                                       │
               ▼                                       ▼
         PreparedStep[]                         ctx = ExecutionWorkspace
@@ -209,13 +216,13 @@ shell-worker/
                          ▼
                          bus.log("terminal:output", ...)  → 持久 listener → GUI 终端窗口
                          ▼
-                         ctx = _resolve_step_result(...)   ← PipelineContext | None | dict["context"]
+                         ctx = _resolve_step_result(...)   ← PipelineContext | None
 ```
 
 #### per-unit bus 隔离
 
 - executor 在每个 unit 开始时调用 `runtime.replace_bus()`。新 bus 不含历史事件，但持久 listener 自动重新挂载到新 bus。GUI 用 `runtime.subscribe(callback)` 一次性订阅后能持续接收所有 unit 的事件流，但通过 `runtime.bus.iterate()` 看到的只是当前单元的事件。
-- 持久 listener 是 runtime 的私有列表，clone() 不传播 events 与 listener。
+- 持久 listener 由 runtime 的线程安全注册表管理；并发 worker fork 共享监听注册表与取消信号，各自持有独立 bus 历史。
 - 任务间：shared 重置、events 隔离、TerminalSessionRegistry 内遗留 session 在 `runtime.close()` 统一清理。
 
 #### shared scope（scope=0）
@@ -243,8 +250,8 @@ shell-worker/
 | `source_root` | `Path \| None` | recurse=true 时保留相对路径的源根 |
 | `current` | `WorkspaceFile` | 当前输入/目录资源 |
 
-方法：`path/file/set_current/entries/files/directories/create_file/create_directory/allocate_file/adopt/read_text/read_bytes/write_text/write_bytes/copy/move/rename/delete/refresh/publish/clone`。
-外部程序创建产物前先用 `allocate_file()` 取得不冲突的完整路径；由工具自行派生的产物通过 `adopt()` 加入清单，executor 在步骤边界调用 `refresh()`。单文件模块用新产物替换输入时，通过 `set_current()` 把新资源传给下游步骤。
+方法：`path/file/set_current/entries/files/directories/create_file/create_directory/allocate_file/adopt/read_text/read_bytes/write_text/write_bytes/copy/move/rename/delete/refresh/publish`。
+外部程序创建产物前先用 `allocate_file()` 取得不冲突的完整路径；由工具自行派生的完整顶层产物通过 `adopt()` 加入清单，未分配的既有目录子路径不能被接管。executor 在步骤边界调用 `refresh()`，已有 `WorkspaceFile` 句柄在移动/重命名后保持对象身份并同步路径。单文件模块用新产物替换输入时，通过 `set_current()` 把新资源传给下游步骤。
 
 ### 3.3 PipelineRuntime
 
@@ -256,7 +263,7 @@ shell-worker/
 | `runtime.log(slug, type, text, data)` | 转发当前 bus |
 | `runtime.subscribe(listener) -> unsubscribe` | 持久订阅：跨 `replace_bus()` 自动重新挂到新 bus（GUI 合约） |
 | `runtime.replace_bus(*, sink=None) -> EventBus` | 切换 bus 用于 per-unit 隔离；持久 listener 自动迁移；返回旧 bus |
-| `runtime.spawn(command, **opts) -> TerminalResult` | 跨平台 PTY spawn + 自动注册到 `runtime.sessions` |
+| `runtime.spawn(command, timeout=None, **opts) -> TerminalResult` | 跨平台 PTY spawn + 自动注册到 `runtime.sessions`；超时关闭会话并抛 `TimeoutError` |
 | `runtime.start(command, **opts) -> TerminalSession` | 非阻塞启动实时会话，可 wait/write/terminate |
 | `runtime.sessions` | `TerminalSessionRegistry` 实例 |
 | `runtime.request_cancel()` / `is_cancelled()` | 取消控制 |
@@ -340,11 +347,13 @@ class ModuleDefinition:
 
 三者可任意组合。当三个参数均为默认值时，调度器回退到直接的 `PipelineExecutor` 路径（零开销）。
 
-**并发模型**：并发能力由 `PipelineExecutor` 统一实现。每个 worker 使用独立 EventBus、共享取消信号和终端会话注册表；结果按输入索引发布，`scope=0` 仅有一个 unit。
+**同步入口**：`WorkflowScheduler.run()` 在调用线程内运行完整 immediate/watch/cron 生命周期，同一 scheduler 实例拒绝并发重入；取消后下一次运行使用新的取消信号。
+
+**并发模型**：并发能力由 `PipelineExecutor` 统一实现。executor 最多维持 `concurrency` 个在途 future；每个 worker 使用独立 EventBus、共享取消信号和终端会话注册表；worker 完成后立即关闭私有 runtime，结果按输入索引发布，`scope=0` 仅有一个 unit。
 
 **监听模型**：监听启动后不处理已有文件，只收集新增、修改和移动目标。事件经 0.5 秒防抖及 size/mtime 稳定检测后组成变化批次，删除事件忽略。监听目录与输出目录必须完全不重叠。监听时拷贝开关开启为 COPY，关闭（CLI `--direct`）为 MOVE；移动批次失败时剩余文件仍发布到输出，避免丢失。
 
-**定时模型**：`_run_cron_loop()` 使用 `croniter.croniter` 计算下次触发时间，`sleep` 等待后执行。
+**定时模型**：`_run_cron()` 使用 `croniter.croniter` 计算下次触发时间，通过可取消事件等待后执行。
 
 **日志路径**：调度器内部创建 `PipelineRuntime` 时若 `enable_log=True`，日志自动写入 `{output_dir}/{yyyyMMdd_HHmmss}_{slug}.jsonl`。并发模式下 worker 日志加 `_w{idx:04d}` 后缀区分。
 
@@ -362,7 +371,7 @@ CONFIG_SCHEMA: dict = { "type": "object", "properties": {...}, "required": [...]
 
 def run(ctx, cfg, runtime):
     ...
-    return ctx            # 或 None 或 {"context": ctx}
+    return ctx            # 或 None
 ```
 
 ### 4.2 MODULE_META 字段
@@ -384,16 +393,15 @@ MODULE_META = {
 ### 4.3 run() 签名与返回值
 
 ```python
-def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None | dict:
+def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
 ```
 
 **返回值约束**：
 
 | 返回 | 行为 |
 |---|---|
-| `PipelineContext` | 用新 context 继续后续步骤 |
+| `PipelineContext` | 用该 context 继续后续步骤；必须仍绑定当前 unit 的 workspace |
 | `None` | 保留原 ctx 继续步骤 |
-| `dict` 含 `"context"` key | 提取 `result["context"]` 继续步骤 |
 | 其他 | 抛 `PipelineExecutionError` |
 
 **失败约束**：模块无法继续时直接抛异常；内核包装为带 module/step 信息的 `ModuleExecutionError`。记录 `error` 事件后正常返回不会改变执行结果。
@@ -401,6 +409,8 @@ def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> 
 **访问能力约束**：`access=read` 可读取文件和更新 `ctx.shared`，但任何工作区 mutation API 都会抛 `FileHandlingError`。调用可能修改文件或生成产物的外部程序时声明 `read_write`。
 
 **平台约束**：当前平台不在 `platforms` 中时，executor 不校验该步骤参数、不调用 `run()`，记录 skipped warning 后继续后续步骤。
+
+**参数范围约束**：数值字段使用 `min` / `max`，不是 JSON Schema 的 `minimum` / `maximum`；模块加载时校验默认值，步骤准备时校验实际参数并补齐默认值。
 
 ### 4.4 跨步骤数据传递
 
@@ -464,6 +474,18 @@ def run(ctx, cfg, runtime):
 | line + per-unit | `verify_line_echo.py` | 读 `ctx.shared["input_line"]` |
 | 调用外部工具 | `verify_run_external_tool.py` | `runtime.spawn`；事件流；exit_code 决策 |
 
+### 4.7 内置模块可用性边界
+
+| 分组 | 模块 | 自动验证边界 |
+|---|---|---|
+| 默认验收 | `verify_*`、`cycle-counter` | `scripts/verify.py` 跨进程执行 6 个示例工作流并断言内容、命名、sidecar 与终端事件 |
+| 工作区模块 | `delete-files`、`flatten-folder`、`normalize-extensions`、`gallery-rename`、`gallery-count`、`rename-by-pattern` | `test_builtin_modules.py` 在真实输出工作区串联执行 |
+| ZIP / Pillow | `extract-archive`、`image-transcode`、`image-resize-watermark` | `test_builtin_modules.py` 验证清单所有权、同名替换和稳定句柄 |
+| 外部程序 | `exiftool-clean` | API 与注册契约受测；处理受支持文件时要求系统安装或显式配置 ExifTool |
+| Windows | `ffmpeg-convert`、`pack-rar`、`strip-attributes` | Linux 上验证注册与平台跳过；实际处理仅在 Windows 且相应工具可用时成立 |
+
+“可加载”只表示版本、schema、签名和元数据通过 `ModuleManager`；“可执行”还要求输入形态、当前平台和外部二进制满足模块约束。内核测试不替代外部工具本身的功能测试。
+
 ---
 
 ## 5. 工作流 YAML 语法
@@ -508,15 +530,18 @@ steps:
 
 ```bash
 python -m pytest                          # 单测
-python -m pytest --cov=core               # 覆盖率
+python -m pytest --cov=core --cov-report=json:coverage.json
+python scripts/check_coverage.py coverage.json  # core≥85%，六个关键模块各≥90%
 python scripts/verify.py                  # 端到端验收（6 个工作流）
 ```
 
 ### 6.1 测试原则
 
-- 不测试具体模块行为：tests/ 只测内核边界、模式行为、IO、核心实现。具体模块功能由 `verify.py` 端到端冒烟覆盖。
+- 内核行为测试与内置模块兼容性冒烟分层：多数 tests 只测内核边界；`test_builtin_modules.py` 只覆盖模块注册、工作区 API 兼容和关键产物，不穷举业务算法。
 - 零 GUI 依赖：tests/ 不 import PySide6，可在安装核心依赖与 pytest 的 Linux CI 跑通。
 - 跨平台 PTY 测试：Linux 覆盖 openpty/Popen，Windows 覆盖 winpty 与 subprocess fallback，共享同一会话契约。
+- 覆盖率门禁：`core` 整体不低于 85%；`context/events/executor/files/runtime/scheduler` 各自不低于 90%。
+- 默认模块验收：`verify.py` 对 `verify_*` 与 `cycle-counter` 的文件内容、命名、摘要、sidecar 与终端事件执行端到端断言。
 
 ### 6.2 测试文件覆盖
 
@@ -528,10 +553,13 @@ python scripts/verify.py                  # 端到端验收（6 个工作流）
 | `test_input.py` | InputPlan.kind 解析、files/lines 优先级、混合 file/dir 接受 |
 | `test_files.py` | ExecutionWorkspace/UnitWorkspace/WorkspaceFile、owned/reference 清单与冲突命名 |
 | `test_module_manager.py` | access/platforms/scope/签名/schema 校验；重复 slug；parent；rescan |
-| `test_workflow_loader.py` | YAML 拒绝旧字段 mode/batch；atom 可选；recurse 独立于 atom；保存往返 |
+| `test_builtin_modules.py` | 19 个内置模块注册；文件链、正则重命名、ZIP 与 Pillow 工作区兼容性 |
+| `test_workflow_loader.py` | YAML 仅接受当前字段；atom 可选；recurse 独立于 atom；保存往返 |
 | `test_config_schema.py` | 8 种参数类型校验 |
 | `test_cli.py` | argparse、退出码、`--list-*`、子进程运行示例、--lines 文本输入 |
 | `test_migration_repairs.py` | 异常失败、干净工作区、glob、监听批次、移动失败保护、异步 PTY |
+| `test_architecture.py` | core 运行时 import 图无环、包级低层 API 边界、scheduler 不依赖 executor 私有符号 |
+| `test_input_inspector_tools.py` | GUI 前置路径检查与模块文件目标路由 |
 
 ---
 

@@ -21,6 +21,7 @@ from typing import Any, Literal, cast
 
 from .config_schema import validate_config_schema
 from .context import PipelineContext
+from .version import CORE_VERSION
 
 LOGGER = logging.getLogger(__name__)
 
@@ -161,6 +162,12 @@ class ModuleManager:
         if not isinstance(core_version, str) or not core_version.strip():
             self._warn(f"MODULE_META.core_version 缺失或非法，已忽略: {path}")
             return None
+        if core_version.strip() != CORE_VERSION:
+            self._warn(
+                f"MODULE_META.core_version 与内核不兼容，已忽略: {path} "
+                f"(module={core_version.strip()}, core={CORE_VERSION})"
+            )
+            return None
 
         raw_tags = meta.get("tags", [])
         if not isinstance(raw_tags, list) or not all(isinstance(t, str) and t.strip() for t in raw_tags):
@@ -241,6 +248,19 @@ class ModuleManager:
         for slug, definition in self._cache.items():
             if definition.parent and definition.parent not in self._cache:
                 self._warn(f"模块 '{slug}' 声明的 parent '{definition.parent}' 不存在于已扫描的模块中。")
+        cycles: set[str] = set()
+        for slug in self._cache:
+            chain: list[str] = []
+            current: str | None = slug
+            while current is not None and current in self._cache:
+                if current in chain:
+                    cycles.update(chain[chain.index(current) :])
+                    break
+                chain.append(current)
+                current = self._cache[current].parent
+        for slug in sorted(cycles):
+            self._warn(f"模块 '{slug}' 的 parent 关系形成循环，已忽略该模块。")
+            self._cache.pop(slug, None)
 
     def _warn(self, message: str) -> None:
         self._warnings.append(message)

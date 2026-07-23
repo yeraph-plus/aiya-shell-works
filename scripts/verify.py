@@ -1,8 +1,7 @@
-"""End-to-end acceptance runner for shell-refactor.
+"""End-to-end acceptance runner for the default workflows.
 
 Spawns ``python main.py`` against each of the six example workflows and
-checks that the expected output files exist (and the file *count* matches).
-Does NOT read file contents — that's pytest's job.  Exit codes:
+checks output names, counts, contents, sidecars and terminal events. Exit codes:
 
     0 — all workflows passed
     1 — at least one failed
@@ -10,10 +9,12 @@ Does NOT read file contents — that's pytest's job.  Exit codes:
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,11 +25,11 @@ CLI = ROOT / "main.py"
 
 WORK = Path(tempfile.mkdtemp(prefix="shellworker-verify-"))
 FAILS: list[str] = []
-CASES: list[tuple[str, callable]] = []
+CASES: list[tuple[str, Callable[[], None]]] = []
 
 
-def case(name: str) -> callable:
-    def deco(fn):
+def case(name: str) -> Callable[[Callable[[], None]], Callable[[], None]]:
+    def deco(fn: Callable[[], None]) -> Callable[[], None]:
         CASES.append((name, fn))
         return fn
 
@@ -48,7 +49,7 @@ def run_cli(workflow: str, out: Path, *extra: str) -> tuple[int, str, str]:
         workflow,
         *extra,
     ]
-    proc = subprocess.run(args, capture_output=True, text=True, cwd=str(ROOT))
+    proc = subprocess.run(args, capture_output=True, text=True, cwd=str(ROOT), timeout=60)
     return proc.returncode, proc.stdout, proc.stderr
 
 
@@ -73,8 +74,11 @@ def test_create() -> None:
     if code != 0:
         FAILS.append(f"create: exit={code} err={err.strip()[:200]}")
         return
-    if not (out / "hello.txt").exists():
+    target = out / "hello.txt"
+    if not target.exists():
         FAILS.append("create: hello.txt missing")
+    elif target.read_text(encoding="utf-8") != "hello world":
+        FAILS.append("create: hello.txt content mismatch")
 
 
 @case("file-rename")
@@ -95,8 +99,11 @@ def test_file_rename() -> None:
     renamed = [p for p in out.rglob("*") if p.is_file() and "_renamed" in p.name]
     if len(renamed) != 3:
         FAILS.append(f"file-rename: expected 3 renamed files, got {len(renamed)}")
-    if not (out / "renames-summary.txt").exists():
-        FAILS.append("file-rename: summary missing")
+    if sorted(path.read_text(encoding="utf-8") for path in renamed) != ["alpha", "beta", "gamma"]:
+        FAILS.append("file-rename: renamed file content mismatch")
+    summaries = sorted(out.glob("renames-summary*.txt"))
+    if len(summaries) != 3 or any("Rename Report" not in path.read_text(encoding="utf-8") for path in summaries):
+        FAILS.append("file-rename: expected three populated summaries")
 
 
 @case("folder-rename")
@@ -120,8 +127,11 @@ def test_folder_rename() -> None:
         return
     if not (renamed_dir / "note.txt").exists():
         FAILS.append("folder-rename: note.txt missing inside renamed dir")
-    if not (out / "folder-summary.txt").exists():
+    summary = out / "folder-summary.txt"
+    if not summary.exists():
         FAILS.append("folder-rename: summary missing")
+    elif "mydir -> pkg-mydir" not in summary.read_text(encoding="utf-8"):
+        FAILS.append("folder-rename: summary mapping mismatch")
 
 
 @case("cycle-count")
@@ -163,6 +173,10 @@ def test_line_echo() -> None:
     files = list(out.glob("task_*.txt"))
     if len(files) != 3:
         FAILS.append(f"line-echo: expected 3 task_*.txt, got {len(files)}")
+    elif sorted(path.read_text(encoding="utf-8").strip() for path in files) != ["alpha", "beta", "gamma"]:
+        FAILS.append("line-echo: file content mismatch")
+    elif any(len(path.stem.removeprefix("task_")) != 12 for path in files):
+        FAILS.append("line-echo: filenames are not deterministic SHA-256 prefixes")
 
 
 @case("external-tool")
@@ -180,6 +194,7 @@ def test_external_tool() -> None:
         "--files",
         str(scratch["src"]),
         "--recurse",
+        "--log",
     )
     if code != 0:
         FAILS.append(f"external-tool: exit={code} err={err.strip()[:200]}")
@@ -191,6 +206,17 @@ def test_external_tool() -> None:
             f"external-tool: expected 3 .done sidecars, got {len(done_files)}; "
             f"cwd contents = {[p.name for p in out.rglob('*')]}"
         )
+    elif any(path.read_bytes() for path in done_files):
+        FAILS.append("external-tool: sidecars must be empty marker files")
+    logs = list(out.glob("*.jsonl"))
+    if len(logs) != 1:
+        FAILS.append(f"external-tool: expected one JSONL log, got {len(logs)}")
+    else:
+        records = [json.loads(line) for line in logs[0].read_text(encoding="utf-8").splitlines()]
+        event_names = {record["text"] for record in records if record["slug"] == "terminal"}
+        required = {"terminal:started", "terminal:output", "terminal:finished"}
+        if not required.issubset(event_names):
+            FAILS.append(f"external-tool: missing terminal events {sorted(required - event_names)}")
 
 
 def main() -> int:

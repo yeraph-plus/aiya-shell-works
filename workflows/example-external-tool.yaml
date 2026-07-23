@@ -10,3 +10,4 @@ steps:
     name: Mock Tool
     params:
       mock_tool_path: ""
+      timeout_seconds: 30

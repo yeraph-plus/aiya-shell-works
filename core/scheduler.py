@@ -16,12 +16,12 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 from .exceptions import PipelineExecutionError
-from .executor import PipelineExecutor, _resolve_workflow_definition
+from .executor import EventCallback, ExecutionSummary, PipelineExecutor, ProgressCallback
 from .files import validate_output_separation
 from .input import InputPlan, resolve_input
 from .module_manager import ModuleManager
 from .runtime import PipelineRuntime
-from .workflow_loader import WorkflowDefinition
+from .workflow_loader import WorkflowDefinition, resolve_workflow_definition
 
 LOGGER = logging.getLogger(__name__)
 
@@ -72,6 +72,13 @@ class _ChangeHandler(FileSystemEventHandler):
             else:
                 self.changed.clear()
 
+    def requeue(self, paths: list[Path]) -> None:
+        with self._lock:
+            for path in paths:
+                self._paths[path] = None
+            if self._paths:
+                self.changed.set()
+
 
 class WorkflowScheduler:
     """Drive immediate, cron and watch triggers through one executor."""
@@ -90,14 +97,24 @@ class WorkflowScheduler:
         self._cron = cron
         self._cancel_event = threading.Event()
         self._active_runtime: PipelineRuntime | None = None
+        self._state_lock = threading.RLock()
+        self._running = False
+        self._cancel_next_run = False
 
     def request_cancel(self) -> None:
-        self._cancel_event.set()
-        if self._active_runtime is not None:
-            self._active_runtime.request_cancel()
+        with self._state_lock:
+            if self._running:
+                self._cancel_event.set()
+                runtime = self._active_runtime
+            else:
+                self._cancel_next_run = True
+                runtime = None
+        if runtime is not None:
+            runtime.request_cancel()
 
     def terminate_session(self, session_id: str) -> bool:
-        runtime = self._active_runtime
+        with self._state_lock:
+            runtime = self._active_runtime
         if runtime is None:
             return False
         session = runtime.sessions.get(session_id)
@@ -118,11 +135,55 @@ class WorkflowScheduler:
         direct_mode: bool = False,
         enable_log: bool = False,
         shared: Mapping[str, Any] | None = None,
+        progress_callback: ProgressCallback | None = None,
+        event_listener: EventCallback | None = None,
+        workflows_dir: str | Path | None = None,
+    ) -> ExecutionSummary:
+        with self._state_lock:
+            if self._running:
+                raise PipelineExecutionError("WorkflowScheduler.run() 不能并发重入")
+            self._running = True
+            self._cancel_event = threading.Event()
+            if self._cancel_next_run:
+                self._cancel_event.set()
+                self._cancel_next_run = False
+        try:
+            return self._run_impl(
+                workflow,
+                output_dir=output_dir,
+                files=files,
+                recurse=recurse,
+                lines_text=lines_text,
+                lines_file=lines_file,
+                direct_mode=direct_mode,
+                enable_log=enable_log,
+                shared=shared,
+                progress_callback=progress_callback,
+                event_listener=event_listener,
+                workflows_dir=workflows_dir,
+            )
+        finally:
+            with self._state_lock:
+                self._running = False
+                self._active_runtime = None
+
+    def _run_impl(
+        self,
+        workflow: WorkflowDefinition | Mapping[str, Any] | str | Path,
+        *,
+        output_dir: str | Path,
+        files: list[str | Path] | None = None,
+        recurse: bool = False,
+        lines_text: str | None = None,
+        lines_file: str | Path | None = None,
+        direct_mode: bool = False,
+        enable_log: bool = False,
+        shared: Mapping[str, Any] | None = None,
         progress_callback: Any = None,
         event_listener: Any = None,
         workflows_dir: str | Path | None = None,
-    ) -> dict[str, Any]:
-        definition = _resolve_workflow_definition(workflow, workflows_dir=workflows_dir)
+    ) -> ExecutionSummary:
+        definition = resolve_workflow_definition(workflow, workflows_dir=workflows_dir)
         plan = resolve_input(files=files, recurse=recurse, lines_text=lines_text, lines_file=lines_file)
 
         if self._cron:
@@ -194,13 +255,14 @@ class WorkflowScheduler:
         shared: Mapping[str, Any] | None,
         progress_callback: Any,
         event_listener: Any,
-    ) -> dict[str, Any]:
+    ) -> ExecutionSummary:
         runtime = PipelineRuntime(
             enable_log=enable_log,
             output_dir=output_dir,
             workflow_slug=definition.meta.slug,
         )
-        self._active_runtime = runtime
+        with self._state_lock:
+            self._active_runtime = runtime
         executor = PipelineExecutor(
             self._module_manager,
             runtime=runtime,
@@ -220,8 +282,9 @@ class WorkflowScheduler:
             )
         finally:
             runtime.close()
-            if self._active_runtime is runtime:
-                self._active_runtime = None
+            with self._state_lock:
+                if self._active_runtime is runtime:
+                    self._active_runtime = None
 
     def _run_cron(
         self,
@@ -234,9 +297,9 @@ class WorkflowScheduler:
         shared: Mapping[str, Any] | None,
         progress_callback: Any,
         event_listener: Any,
-    ) -> dict[str, Any]:
+    ) -> ExecutionSummary:
         schedule = croniter.croniter(self._cron or "* * * * *", datetime.now())
-        last_result: dict[str, Any] | None = None
+        last_result: ExecutionSummary | None = None
         while not self._cancel_event.is_set():
             next_time = schedule.get_next(datetime)
             delay = max(0.0, (next_time - datetime.now()).total_seconds())
@@ -266,18 +329,19 @@ class WorkflowScheduler:
         shared: Mapping[str, Any] | None,
         progress_callback: Any,
         event_listener: Any,
-    ) -> dict[str, Any]:
+    ) -> ExecutionSummary:
         watch_dirs = _collect_watch_dirs(list(plan.files))
         handler = _ChangeHandler()
         observer = Observer()
         for directory in watch_dirs:
             observer.schedule(handler, str(directory), recursive=plan.recurse)
-        observer.start()
-
         schedule = croniter.croniter(self._cron, datetime.now()) if self._cron else None
         next_cron = schedule.get_next(datetime) if schedule is not None else None
-        last_result: dict[str, Any] | None = None
+        last_result: ExecutionSummary | None = None
+        started = False
         try:
+            observer.start()
+            started = True
             while not self._cancel_event.is_set():
                 if next_cron is not None and datetime.now() >= next_cron:
                     last_result = self._run_once(
@@ -303,10 +367,10 @@ class WorkflowScheduler:
                     break
 
                 changed = _filter_watch_paths(handler.drain(), list(plan.files), recurse=plan.recurse)
-                stable = _wait_for_stable_files(changed, self._cancel_event)
+                stable, unstable = _wait_for_stable_files(changed, self._cancel_event)
+                handler.requeue(unstable)
                 if not stable:
                     continue
-                handler.discard(stable)
                 batch_plan = InputPlan(kind="path", recurse=False, files=tuple(stable))
                 last_result = self._run_once(
                     definition,
@@ -320,8 +384,11 @@ class WorkflowScheduler:
                     event_listener=event_listener,
                 )
         finally:
-            observer.stop()
-            observer.join(timeout=5)
+            if started:
+                observer.stop()
+                observer.join(timeout=5)
+                if observer.is_alive():
+                    raise PipelineExecutionError("watch observer 未能在 5 秒内退出")
         return last_result or self._cancelled_summary(definition, output_dir)
 
     def _validate_cron(self) -> None:
@@ -331,7 +398,7 @@ class WorkflowScheduler:
             raise PipelineExecutionError(f"invalid cron expression: {self._cron} — {exc}") from exc
 
     @staticmethod
-    def _cancelled_summary(definition: WorkflowDefinition, output_dir: str | Path) -> dict[str, Any]:
+    def _cancelled_summary(definition: WorkflowDefinition, output_dir: str | Path) -> ExecutionSummary:
         return {
             "success": False,
             "cancelled": True,
@@ -379,7 +446,7 @@ def _filter_watch_paths(paths: list[Path], roots: list[Path], *, recurse: bool) 
     return list(accepted)
 
 
-def _wait_for_stable_files(paths: list[Path], cancel_event: threading.Event) -> list[Path]:
+def _wait_for_stable_files(paths: list[Path], cancel_event: threading.Event) -> tuple[list[Path], list[Path]]:
     pending = OrderedDict((path, None) for path in paths)
     previous: dict[Path, tuple[int, int]] = {}
     unchanged: dict[Path, int] = {}
@@ -407,4 +474,4 @@ def _wait_for_stable_files(paths: list[Path], cancel_event: threading.Event) -> 
 
     for path in pending:
         LOGGER.warning("watch path did not become stable before timeout: %s", path)
-    return stable
+    return stable, list(pending)

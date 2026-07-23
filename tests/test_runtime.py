@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import gc
 import json
+import threading
+import weakref
 from pathlib import Path
+
+import pytest
 
 from core.events import (
     EventBus,
@@ -190,3 +195,99 @@ def test_runtime_log_file_sink(tmp_path: Path) -> None:
 def test_runtime_sessions_registry_starts_empty() -> None:
     r = PipelineRuntime()
     assert len(r.sessions) == 0
+
+
+def test_event_is_immutable_and_data_is_read_only() -> None:
+    event = PipelineEvent(slug="s", type="message", text="text", data={"key": "value"})
+    with pytest.raises((AttributeError, TypeError)):
+        event.text = "changed"  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        event.data["key"] = "changed"  # type: ignore[index]
+
+
+def test_event_bus_concurrent_logging_is_lossless() -> None:
+    bus = EventBus()
+
+    def emit(offset: int) -> None:
+        for index in range(100):
+            bus.log("thread", "message", str(offset + index))
+
+    threads = [threading.Thread(target=emit, args=(index * 100,)) for index in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert len(bus) == 800
+
+
+def test_runtime_close_releases_listeners_and_history() -> None:
+    runtime = PipelineRuntime()
+
+    class Payload:
+        pass
+
+    payload = Payload()
+    reference = weakref.ref(payload)
+
+    def listener(_event, retained=payload):
+        return retained
+
+    runtime.subscribe(listener)
+    runtime.log("test", "message", "retained")
+    del payload, listener
+
+    runtime.close()
+    gc.collect()
+
+    assert reference() is None
+    assert len(runtime.bus) == 0
+
+
+def test_runtime_subscription_fork_and_resume_contract(caplog: pytest.LogCaptureFixture) -> None:
+    runtime = PipelineRuntime()
+    seen: list[str] = []
+
+    def failing_listener(_event: PipelineEvent) -> None:
+        raise RuntimeError("listener failed")
+
+    unsubscribe = runtime.subscribe(lambda event: seen.append(event.text))
+    runtime.subscribe(failing_listener)
+    fork = runtime.fork()
+    fork.log("fork", "message", "from-fork")
+    assert seen == ["from-fork"]
+    assert runtime._iter_persistent_listeners()
+    assert "listener failed" in caplog.text
+
+    unsubscribe()
+    runtime.unsubscribe(failing_listener)
+    runtime.unsubscribe(failing_listener)
+    fork.log("fork", "message", "ignored")
+    assert seen == ["from-fork"]
+
+    runtime.set_resuming(True)
+    assert runtime.is_resuming()
+    fork.close()
+    runtime.close()
+    runtime.close()
+
+
+def test_runtime_spawn_timeout_closes_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = PipelineRuntime()
+
+    class FakeSession:
+        closed = False
+
+        def wait(self, *, timeout: float | None = None):
+            assert timeout == 0.01
+            raise TimeoutError
+
+        def close(self) -> None:
+            self.closed = True
+
+    session = FakeSession()
+    monkeypatch.setattr(runtime, "start", lambda *args, **kwargs: session)
+
+    with pytest.raises(TimeoutError):
+        runtime.spawn(["fake"], timeout=0.01)
+    assert session.closed

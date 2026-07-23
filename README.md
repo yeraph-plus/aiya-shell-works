@@ -68,7 +68,7 @@ python main.py example-external-tool.yaml \
 
 内核**根据实际输入自动推导执行形状**。CLI 按 `--files` 优先、`--lines` 次之、皆空即"无输入"识别输入模式。`--files` 支持 `*`、`?`、`[]`、`**`，未匹配模式直接报错。scope（YAML 字段）决定多少个输入共享一个上下文；recurse（CLI 参数）控制目录展开。YAML 中的 `atom` 字段为可选 GUI 元数据，仅用于桌面端输入面板选择，内核不读它做执行判断。
 
-最终 `output_dir` 同时是产物工作区。存在 `access=read_write` 的有效步骤时，输入按原有规则导入；全部有效步骤均为 `access=read` 时，scope 0/1/N 都通过只读引用清单访问原始输入，不执行启动复制。`--direct` 与 watch MOVE 是显式模式，优先于只读优化。输入导入、创建和重命名遇到顶层冲突时整体改名为 `name (1)`，不会覆盖已有条目。
+最终 `output_dir` 同时是产物工作区。存在 `access=read_write` 的有效步骤时，输入按工作区规则导入；全部有效步骤均为 `access=read` 时，scope 0/1/N 都通过只读引用清单访问原始输入，不执行启动复制。`--direct` 与 watch MOVE 是显式模式，优先于只读优化。输入导入、创建和重命名遇到顶层冲突时整体改名为 `name (1)`，不会覆盖、合并或删除已有条目。工作区只允许访问清单内资源，`WorkspaceFile` 在移动和重命名后保持对象身份与路径同步。
 
 | 参数 | 说明 | 值 | 定义位置 |
 |------|------|-----|----------|
@@ -172,12 +172,30 @@ steps:
 
 `resources/` 为外部二进制程序目录，提供给模块调用，在子会话中工作。
 
-模块通过 `ctx.current` 获取当前资源，通过 `ctx.files()` 获取递归文件清单，并使用 `ctx.create_file()` 或 `WorkspaceFile` 的读写、复制、移动、重命名和删除方法。模块以新产物替换单文件输入时可用 `ctx.set_current()` 将其交给下游步骤。外部程序创建新产物时先调用 `ctx.allocate_file()` 取得合法且不冲突的 `WorkspaceFile.path`；由工具自行派生的产物通过 `ctx.adopt()` 加入清单，executor 会在步骤边界刷新。致命错误必须抛异常，`runtime.log(..., "error", ...)` 仅记录诊断信息，不会让工作流失败。
+模块通过 `ctx.current` 获取当前资源，通过 `ctx.files()` 获取递归文件清单，并使用 `ctx.create_file()` 或 `WorkspaceFile` 的读写、复制、移动、重命名和删除方法。模块以新产物替换单文件输入时可用 `ctx.set_current()` 将其交给下游步骤。外部程序创建新产物时先调用 `ctx.allocate_file()` 取得合法且不冲突的 `WorkspaceFile.path`；由工具自行派生的完整顶层产物通过 `ctx.adopt()` 加入清单，executor 会在步骤边界刷新。未分配的既有目录子路径不能被接管。致命错误必须抛异常，`runtime.log(..., "error", ...)` 仅记录诊断信息，不会让工作流失败。
+
+`run()` 只能返回绑定当前 unit workspace 的 `PipelineContext` 或 `None`；不接受字典包装或跨 workspace context。跨步骤业务数据写入 `ctx.shared`，不要通过替换 context 绕过工作区所有权。
 
 `MODULE_META.access` 使用 `read` 或 `read_write`；缺省为保守的 `read_write`。`MODULE_META.platforms` 为 `None` 或 `windows/linux/darwin` 列表。不兼容步骤会记录 skipped warning 并继续执行后续步骤；其参数只在支持的平台上校验。GUI 显示全部模块，并标注当前平台不可用的模块。
 
-`CONFIG_SCHEMA` 保持 JSON-Schema 风格根结构：`type: object`、`properties` 与可选 `required`。内核据此校验工作流参数，GUI 使用同一结构生成输入控件。
+`CONFIG_SCHEMA` 保持 JSON-Schema 风格根结构：`type: object`、`properties` 与可选 `required`。数值范围键使用项目约定的 `min` / `max`。内核据此校验工作流参数，GUI 使用同一结构生成输入控件。
 
-外部命令可用阻塞式 `runtime.spawn()`，或用 `runtime.start()` 获取支持 `wait()`、`write()`、`terminate()` 的实时会话。命令参数列表直接执行；显式 `shell=True` 时 Windows 使用 `cmd.exe`，Linux/macOS 使用 `/bin/sh -lc`。
+外部命令可用支持 `timeout` 的阻塞式 `runtime.spawn()`，或用 `runtime.start()` 获取支持 `wait()`、`write()`、`terminate()` 的实时会话。命令参数列表直接执行；显式 `shell=True` 时 Windows 使用 `cmd.exe`，Linux/macOS 使用 `/bin/sh -lc`。`WorkflowScheduler.run()` 为同步入口，同一实例拒绝并发重入；并发度只控制 executor 内同时在途的处理单元数量。
+
+## 内置模块可用性
+
+仓库内 19 个模块都必须通过统一的版本、元数据、schema 与 `run(ctx, cfg, runtime)` 注册检查。默认 `verify_*` 与 `cycle-counter` 由 6 个端到端工作流验收；文件整理、图集、正则重命名、ZIP 与 Pillow 模块另有真实工作区兼容性冒烟。
+
+`exiftool-clean` 处理受支持文件时需要 ExifTool。`ffmpeg-convert`、`pack-rar`、`strip-attributes` 声明为 Windows 模块，其中前两者还需要相应外部程序；其他平台会跳过这些步骤。模块成功注册不代表外部二进制已安装。
+
+## 验证
+
+```bash
+python -m pytest --cov=core --cov-report=json:coverage.json
+python scripts/check_coverage.py coverage.json
+python scripts/verify.py
+```
+
+覆盖率门禁要求 `core` 整体不低于 85%，`context/events/executor/files/runtime/scheduler` 各自不低于 90%。`scripts/verify.py` 对默认 `verify_*` 与 `cycle-counter` 工作流执行端到端内容及终端事件验收；`tests/test_builtin_modules.py` 检查全部内置模块注册和无需专有外部工具的关键工作区路径。
 
 更多实现细节请阅读 `AGENTS.md`。

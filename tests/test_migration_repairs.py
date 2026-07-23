@@ -227,6 +227,7 @@ def test_watch_has_no_initial_run_and_processes_new_file(module_manager: ModuleM
     output = tmp_path / "output"
     scheduler = WorkflowScheduler(module_manager, watch=True)
     result: list[dict] = []
+    progress: list[dict] = []
 
     thread = threading.Thread(
         target=lambda: result.append(
@@ -235,6 +236,7 @@ def test_watch_has_no_initial_run_and_processes_new_file(module_manager: ModuleM
                 output_dir=output,
                 files=[watched],
                 recurse=True,
+                progress_callback=progress.append,
             )
         ),
         daemon=True,
@@ -246,7 +248,7 @@ def test_watch_has_no_initial_run_and_processes_new_file(module_manager: ModuleM
     created = watched / "created.txt"
     created.write_text("new", encoding="utf-8")
     deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and not (output / "created.txt").exists():
+    while time.monotonic() < deadline and not any(item.get("status") == "completed" for item in progress):
         time.sleep(0.1)
     scheduler.request_cancel()
     thread.join(timeout=5)

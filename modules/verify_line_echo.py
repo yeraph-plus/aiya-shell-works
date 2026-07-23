@@ -8,6 +8,7 @@ collisions in ``output_dir``.
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -35,7 +36,7 @@ CONFIG_SCHEMA = {
 
 def run(ctx: PipelineContext, cfg: dict[str, Any], runtime: PipelineRuntime) -> PipelineContext | None:
     line = ctx.shared.get("input_line", "")
-    ident = f"{abs(hash(line)) & 0xFFFF:04x}"
+    ident = hashlib.sha256(line.encode("utf-8")).hexdigest()[:12]
     filename = f"{cfg['prefix']}_{ident}{cfg['extension']}"
     target = ctx.create_file(filename, line + "\n")
     runtime.log(

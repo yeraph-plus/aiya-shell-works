@@ -1,23 +1,9 @@
-"""Pipeline runtime: control plane for a single workflow execution.
+"""Control plane for one workflow execution.
 
-The runtime owns the control-flow plane —
-event bus, terminal sessions, cancellation and resume — while ``PipelineContext``
-carries only business data (paths, shared scratch dict, extra files).
-
-Splitting the two is a non-degrading invariant: previously the event bus
-lived on the context and modules shared it implicitly through ``clone()``;
-this worked only because module authors were trained to use
-``clone(events=self.events)``.  The new contract makes the sharing explicit
-and lets a single ``PipelineRuntime`` drive a whole execution without any
-per-unit subscription bookkeeping in the executor.
-
-Per-unit event-bus isolation: each unit gets a fresh ``EventBus`` swapped in
-``runtime.bus``; other busses accumulate independently.  This counts as
-"task isolation" — two units never observe each other's events.
-
-Multiprocessing-ready: ``runtime.spawn`` and ``runtime.log`` stay abstract so
-that a future ``QueueRuntime`` subclass can ship the same calls across a
-process boundary.
+The runtime owns event dispatch, terminal sessions, cancellation, persistent
+listeners and the log sink. Per-unit and worker runtimes have independent
+event histories while sharing the cancellation signal, session registry and
+thread-safe listener registry.
 """
 
 from __future__ import annotations
@@ -34,6 +20,43 @@ from .terminal import TerminalResult, TerminalSession, TerminalSessionRegistry
 LOGGER = logging.getLogger(__name__)
 
 
+class _ListenerRegistry:
+    def __init__(self) -> None:
+        self._listeners: list[Callable[[PipelineEvent], None]] = []
+        self._lock = threading.RLock()
+        self._dispatch_lock = threading.RLock()
+
+    def subscribe(self, listener: Callable[[PipelineEvent], None]) -> None:
+        with self._lock:
+            if listener not in self._listeners:
+                self._listeners.append(listener)
+
+    def unsubscribe(self, listener: Callable[[PipelineEvent], None]) -> None:
+        with self._lock:
+            try:
+                self._listeners.remove(listener)
+            except ValueError:
+                pass
+
+    def dispatch(self, event: PipelineEvent) -> None:
+        with self._lock:
+            listeners = list(self._listeners)
+        with self._dispatch_lock:
+            for listener in listeners:
+                try:
+                    listener(event)
+                except Exception:
+                    LOGGER.exception("Pipeline runtime listener failed: %r", listener)
+
+    def snapshot(self) -> list[Callable[[PipelineEvent], None]]:
+        with self._lock:
+            return list(self._listeners)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._listeners.clear()
+
+
 class PipelineRuntime:
     """Owns event dispatch, terminal sessions, cancellation and log sink."""
 
@@ -48,6 +71,7 @@ class PipelineRuntime:
         owns_log_sink: bool = True,
         owns_sessions: bool = True,
         cancel_event: threading.Event | None = None,
+        listener_registry: _ListenerRegistry | None = None,
     ) -> None:
         self._log_sink = log_sink
         if enable_log and log_sink is None and output_dir:
@@ -62,11 +86,11 @@ class PipelineRuntime:
         self._owns_sessions = owns_sessions
         self._cancel_event = cancel_event or threading.Event()
         self._resuming = False
+        self._listener_registry = listener_registry or _ListenerRegistry()
         self._bus: EventBus = EventBus(sink=self._log_sink)
-        # Persistent listeners are re-attached to every new bus that replaces the
-        # active one.  This is the GUI contract: subscribe once at startup and
-        # get every per-unit event stream without re-subscribing manually.
-        self._persistent_listeners: list[Callable[[PipelineEvent], None]] = []
+        self._bus.subscribe(self._listener_registry.dispatch)
+        self._close_lock = threading.Lock()
+        self._closed = False
 
     # ------------------------------------------------------------------
     # Event bus surface
@@ -75,10 +99,6 @@ class PipelineRuntime:
     @property
     def bus(self) -> EventBus:
         return self._bus
-
-    @bus.setter
-    def bus(self, value: EventBus) -> None:
-        self._bus = value
 
     def log(
         self,
@@ -101,27 +121,17 @@ class PipelineRuntime:
         not about who listens going forward.
         """
 
-        if listener not in self._persistent_listeners:
-            self._persistent_listeners.append(listener)
-        self._bus.subscribe(listener)
+        self._listener_registry.subscribe(listener)
 
         def _unsubscribe() -> None:
-            try:
-                self._persistent_listeners.remove(listener)
-            except ValueError:
-                pass
-            self._bus.unsubscribe(listener)
+            self._listener_registry.unsubscribe(listener)
 
         return _unsubscribe
 
     def unsubscribe(self, listener: Callable[[PipelineEvent], None]) -> None:
         """Remove a previously registered persistent listener (idempotent)."""
 
-        try:
-            self._persistent_listeners.remove(listener)
-        except ValueError:
-            pass
-        self._bus.unsubscribe(listener)
+        self._listener_registry.unsubscribe(listener)
 
     def replace_bus(self, *, sink: LogSink | None = None) -> EventBus:
         """Install a fresh bus for a new processing unit.
@@ -135,12 +145,11 @@ class PipelineRuntime:
         new_sink = sink if sink is not None else self._log_sink
         previous = self._bus
         self._bus = EventBus(sink=new_sink)
-        for listener in self._persistent_listeners:
-            self._bus.subscribe(listener)
+        self._bus.subscribe(self._listener_registry.dispatch)
         return previous
 
     def _iter_persistent_listeners(self) -> list[Callable[[PipelineEvent], None]]:
-        return list(self._persistent_listeners)
+        return self._listener_registry.snapshot()
 
     def fork(self) -> PipelineRuntime:
         """Create an isolated event bus sharing sessions, sink and listeners."""
@@ -151,9 +160,8 @@ class PipelineRuntime:
             owns_log_sink=False,
             owns_sessions=False,
             cancel_event=self._cancel_event,
+            listener_registry=self._listener_registry,
         )
-        for listener in self._persistent_listeners:
-            runtime.subscribe(listener)
         return runtime
 
     # ------------------------------------------------------------------
@@ -173,6 +181,7 @@ class PipelineRuntime:
         exit_pattern: str | None = None,
         exit_action: str = "write_newline",
         shell: bool = False,
+        timeout: float | None = None,
     ) -> TerminalResult:
         """Spawn ``command`` in a PTY (or subprocess fallback) and block.
 
@@ -180,14 +189,19 @@ class PipelineRuntime:
         so GUI layers (or CLI sinks) stay uniform regardless of platform.
         """
 
-        return self.start(
+        session = self.start(
             command,
             cwd=cwd,
             env=env,
             exit_pattern=exit_pattern,
             exit_action=exit_action,
             shell=shell,
-        ).wait()
+        )
+        try:
+            return session.wait(timeout=timeout)
+        except TimeoutError:
+            session.close()
+            raise
 
     def start(
         self,
@@ -226,6 +240,7 @@ class PipelineRuntime:
         """Request graceful stop at the next step boundary."""
 
         self._cancel_event.set()
+        self._sessions.terminate_all()
 
     def is_cancelled(self) -> bool:
         return self._cancel_event.is_set()
@@ -247,8 +262,16 @@ class PipelineRuntime:
     def close(self) -> None:
         """Tear down log sinks and outstanding terminal sessions."""
 
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
         if self._owns_sessions:
             self._sessions.close_all()
-        sink = self._log_sink
-        if self._owns_log_sink and isinstance(sink, JSONLFileSink):
-            sink.close()
+        self._bus.reset()
+        self._bus.clear_listeners()
+        if self._owns_log_sink:
+            close = getattr(self._log_sink, "close", None)
+            if callable(close):
+                close()
+            self._listener_registry.clear()

@@ -1,6 +1,6 @@
 """Workflow YAML loading, saving, listing, and validation.
 
-New YAML schema (no legacy ``mode`` field):
+Current YAML schema:
 
 ```yaml
 meta:
@@ -8,18 +8,17 @@ meta:
   description: ...
   version: "1.0.0"
   slug: optional-slug
-atom: file              # file | folder | line | none
-scope: per-unit         # per-unit | shared
-recurse: false          # optional; only meaningful when atom == file
+atom: file              # optional GUI metadata: file | folder | line | none
+scope: 1                # 0 = shared, 1 = per-unit, N > 1 = batched
+recurse: false          # optional path-input directory expansion
 steps:
   - module: verify-rename-path
     name: Rename
     params: {...}
 ```
 
-The legacy ``mode`` and ``batch`` fields are rejected by the validator —
-this is the hard-cut migration strategy decided in §D6.  No compatibility
-shims are provided.
+The validator rejects fields outside this contract, including ``mode``,
+``batch`` and ``batch_scope``.
 """
 
 from __future__ import annotations
@@ -31,7 +30,6 @@ from typing import Any
 
 import yaml
 
-from .context import PipelineContext  # noqa: F401 — re-export surface unchanged
 from .exceptions import WorkflowValidationError
 
 WORKFLOW_SUFFIXES = (".yaml", ".yml")
@@ -257,7 +255,8 @@ class WorkflowLoader:
         elif isinstance(atom, str) and atom in VALID_ATOMS:
             atom_value = atom
         else:
-            errors.append("Field 'atom' must be one of: " + ", ".join(f"'{a}'" for a in VALID_ATOMS) + " (optional, GUI metadata only).")
+            valid_atoms = ", ".join(f"'{value}'" for value in VALID_ATOMS)
+            errors.append(f"Field 'atom' must be one of: {valid_atoms} (optional, GUI metadata only).")
             atom_value = None
         scope = doc.get("scope")
         if not isinstance(scope, int) or scope < 0:
@@ -300,15 +299,18 @@ class WorkflowLoader:
         if errors:
             return WorkflowValidationResult(is_valid=False, errors=tuple(errors))
 
+        valid_name = name if isinstance(name, str) else ""
+        valid_scope = scope if isinstance(scope, int) else 1
+
         definition = WorkflowDefinition(
             meta=WorkflowMeta(
-                name=name.strip(),
+                name=valid_name.strip(),
                 description=description.strip(),
                 version=version.strip(),
                 slug=slug.strip() if isinstance(slug, str) else "",
             ),
             atom=atom_value,
-            scope=scope,
+            scope=valid_scope,
             recurse=recurse,
             steps=tuple(steps),
             source_path=Path(source_path).resolve() if source_path else None,
@@ -343,3 +345,23 @@ class WorkflowLoader:
         slug = "".join(c.lower() if c.isalnum() else "-" for c in name.strip())
         cleaned = "-".join(part for part in slug.split("-") if part)
         return f"{cleaned or 'workflow'}.yaml"
+
+
+def resolve_workflow_definition(
+    workflow: WorkflowDefinition | Mapping[str, Any] | str | Path,
+    *,
+    workflows_dir: str | Path | None = None,
+) -> WorkflowDefinition:
+    if isinstance(workflow, WorkflowDefinition):
+        return workflow
+    loader_root = Path(workflows_dir).resolve() if workflows_dir is not None else Path.cwd() / "workflows"
+    loader = WorkflowLoader(loader_root)
+    if isinstance(workflow, Mapping):
+        result = loader.validate_document(workflow)
+        if not result.is_valid or result.workflow is None:
+            raise WorkflowValidationError(list(result.errors))
+        return result.workflow
+    path = Path(workflow)
+    if path.is_absolute():
+        loader = WorkflowLoader(path.parent)
+    return loader.load(path)

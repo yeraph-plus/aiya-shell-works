@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import threading
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import yaml
 
+import core.scheduler as scheduler_module
 from core import (
     ModuleManager,
     WorkflowLoader,
@@ -405,3 +409,152 @@ def test_prepare_steps_unknown_module_raises(modules_dir: Path, tmp_path: Path) 
     )
     with pytest.raises(PipelineExecutionError):
         scheduler.run(WorkflowLoader(tmp_path / "workflows").load("wf.yaml"), output_dir=tmp_path / "out")
+
+
+def test_change_handler_preserves_order_and_supports_requeue() -> None:
+    handler = scheduler_module._ChangeHandler()
+    handler.on_modified(SimpleNamespace(is_directory=True, src_path="ignored"))
+    handler.on_modified(SimpleNamespace(is_directory=False, src_path="a.txt"))
+    handler.on_created(SimpleNamespace(src_path="b.txt"))
+    handler.on_moved(SimpleNamespace(dest_path="c.txt"))
+    assert handler.changed.is_set()
+    assert handler.drain() == [Path("a.txt"), Path("b.txt"), Path("c.txt")]
+    assert not handler.changed.is_set()
+
+    handler.requeue([Path("a.txt"), Path("b.txt")])
+    handler.discard([Path("a.txt")])
+    assert handler.changed.is_set()
+    assert handler.drain() == [Path("b.txt")]
+    handler.requeue([Path("b.txt")])
+    handler.discard([Path("b.txt")])
+    assert not handler.changed.is_set()
+
+
+def test_watch_path_helpers_filter_and_stabilize(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    direct = root / "direct.txt"
+    direct.write_text("direct", encoding="utf-8")
+    nested_directory = root / "nested"
+    nested_directory.mkdir()
+    nested = nested_directory / "nested.txt"
+    nested.write_text("nested", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+
+    assert scheduler_module._collect_watch_dirs([root, outside]) == {root.resolve(), tmp_path.resolve()}
+    filtered = scheduler_module._filter_watch_paths(
+        [direct, nested, outside],
+        [root],
+        recurse=False,
+    )
+    assert filtered == [direct.resolve()]
+    recursive = scheduler_module._filter_watch_paths([nested_directory], [root], recurse=True)
+    assert recursive == [nested.resolve()]
+    assert scheduler_module._filter_watch_paths([outside], [root], recurse=True) == []
+
+    monkeypatch.setattr(scheduler_module, "_STABILITY_POLL_SECONDS", 0.001)
+    monkeypatch.setattr(scheduler_module, "_STABILITY_TIMEOUT_SECONDS", 0.2)
+    stable, unstable = scheduler_module._wait_for_stable_files(
+        [direct, tmp_path / "missing.txt"],
+        threading.Event(),
+    )
+    assert stable == [direct]
+    assert unstable == []
+
+    monkeypatch.setattr(scheduler_module, "_STABILITY_TIMEOUT_SECONDS", 0.0)
+    stable, unstable = scheduler_module._wait_for_stable_files([direct], threading.Event())
+    assert stable == []
+    assert unstable == [direct]
+
+
+def test_scheduler_reentry_cancel_and_session_termination(modules_dir: Path, tmp_path: Path) -> None:
+    scheduler = WorkflowScheduler(ModuleManager(modules_dir))
+    definition_path = _make_wf(
+        tmp_path / "workflows",
+        "wf.yaml",
+        atom="none",
+        scope=1,
+        recurse=False,
+        steps=[{"module": "sched-none", "params": {}}],
+        meta_slug="test",
+    )
+    definition = WorkflowLoader(tmp_path / "workflows").load(definition_path.name)
+
+    scheduler._running = True
+    with pytest.raises(PipelineExecutionError, match="并发重入"):
+        scheduler.run(definition, output_dir=tmp_path / "out")
+
+    class Session:
+        terminated = False
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+    session = Session()
+
+    class Sessions:
+        def get(self, session_id: str):
+            return session if session_id == "known" else None
+
+    class Runtime:
+        sessions = Sessions()
+        cancelled = False
+
+        def request_cancel(self) -> None:
+            self.cancelled = True
+
+    runtime = Runtime()
+    scheduler._active_runtime = runtime
+    assert scheduler.terminate_session("known")
+    assert session.terminated
+    assert not scheduler.terminate_session("missing")
+    scheduler.request_cancel()
+    assert runtime.cancelled
+    scheduler._active_runtime = None
+    assert not scheduler.terminate_session("known")
+
+
+def test_cron_loop_runs_once_then_returns_last_result(
+    modules_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    definition_path = _make_wf(
+        tmp_path / "workflows",
+        "wf.yaml",
+        atom="none",
+        scope=1,
+        recurse=False,
+        steps=[{"module": "sched-none", "params": {}}],
+        meta_slug="cron-test",
+    )
+    definition = WorkflowLoader(tmp_path / "workflows").load(definition_path.name)
+    scheduler = WorkflowScheduler(ModuleManager(modules_dir), cron="* * * * *")
+
+    class Schedule:
+        def get_next(self, _kind):
+            return datetime.now()
+
+    monkeypatch.setattr(scheduler_module.croniter, "croniter", lambda *args, **kwargs: Schedule())
+    expected = {"success": True, "processed_units": 1}
+
+    def run_once(*args, **kwargs):
+        scheduler._cancel_event.set()
+        return expected
+
+    monkeypatch.setattr(scheduler, "_run_once", run_once)
+    result = scheduler._run_cron(
+        definition,
+        scheduler_module.InputPlan(kind="none"),
+        tmp_path / "out",
+        direct_mode=False,
+        enable_log=False,
+        shared=None,
+        progress_callback=None,
+        event_listener=None,
+    )
+    assert result is expected

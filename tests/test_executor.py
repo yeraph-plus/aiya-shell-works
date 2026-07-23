@@ -48,10 +48,12 @@ CONFIG_SCHEMA = {
 def run(ctx, cfg, runtime):
     suffix = cfg["suffix"]
     old = ctx.current
+    old_path = old.path
     new = old.rename(old.name + suffix)
     renames = list(ctx.shared.get("renames", []))
-    renames.append({"from": str(old.path), "to": str(new.path)})
-    return ctx.clone(shared={**ctx.shared, "renames": renames})
+    renames.append({"from": str(old_path), "to": str(new.path)})
+    ctx.shared["renames"] = renames
+    return ctx
 """
 
 SHARED_COUNT_MODULE = """
@@ -431,18 +433,14 @@ def test_shared_direct_mode_rejected(modules_dir: Path, tmp_path: Path) -> None:
     f = tmp_path / "a.txt"
     f.write_text("x", encoding="utf-8")
     executor = PipelineExecutor(ModuleManager(modules_dir))
-    summary = executor.execute(
-        WorkflowLoader(tmp_path / "workflows").load("wf.yaml"),
-        output_dir=out,
-        files=[f],
-        recurse=True,
-        direct_mode=True,
-    )
-    # Per-unit isolation swallows the exception; the recorded error carries
-    # the FileHandlingError type so GUI/CLI callers can surface the cause.
-    assert not summary["success"]
-    assert summary["errors"]
-    assert "FileHandlingError" in summary["errors"][0]["type"]
+    with pytest.raises(PipelineExecutionError, match="direct_mode"):
+        executor.execute(
+            WorkflowLoader(tmp_path / "workflows").load("wf.yaml"),
+            output_dir=out,
+            files=[f],
+            recurse=True,
+            direct_mode=True,
+        )
 
 
 @pytest.mark.parametrize("scope", [0, 1, 2])
@@ -731,7 +729,7 @@ def test_scope_batches_path_inputs_into_isolated_worktrees(modules_dir: Path, tm
 
 
 # ---------------------------------------------------------------------------
-# Step contract: context / None / dict-with-context / invalid
+# Step contract: context / None / invalid
 # ---------------------------------------------------------------------------
 
 RETURN_INVALID_MODULE = """

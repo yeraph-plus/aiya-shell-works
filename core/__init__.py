@@ -27,16 +27,9 @@ from .exceptions import (
     TerminalSpawnError,
     WorkflowValidationError,
 )
-from .executor import PipelineExecutor, PreparedStep, execute_workflow
+from .executor import ExecutionSummary, PipelineExecutor, PreparedStep, UnitResult, execute_workflow
 from .files import (
-    ExecutionWorkspace,
-    UnitWorkspace,
-    WorkingCopier,
     WorkspaceFile,
-    build_lines_units,
-    build_path_units,
-    make_unique_path,
-    units_from_plan,
 )
 from .input import InputPlan, resolve_input
 from .input_inspector import InputInspector, ValidationResult
@@ -50,8 +43,9 @@ from .module_manager import (
 )
 from .runtime import PipelineRuntime
 from .scheduler import WorkflowScheduler
-from .terminal import TerminalResult, TerminalSession, TerminalSessionRegistry, get_session
+from .terminal import TerminalResult, TerminalSession, TerminalSessionRegistry
 from .tools import collect_file_targets, ensure_pty_available, parse_extension_set
+from .version import CORE_VERSION
 from .workflow_loader import (
     VALID_SCOPES,
     WorkflowDefinition,
@@ -60,9 +54,8 @@ from .workflow_loader import (
     WorkflowStep,
     WorkflowSummary,
     WorkflowValidationResult,
+    resolve_workflow_definition,
 )
-
-CORE_VERSION = "2.0.0"
 
 __all__ = [
     "CORE_VERSION",
@@ -78,25 +71,18 @@ __all__ = [
     "TerminalResult",
     "TerminalSession",
     "TerminalSessionRegistry",
-    "get_session",
     "InputPlan",
     "resolve_input",
     "InputInspector",
     "ValidationResult",
-    "WorkingCopier",
-    "ExecutionWorkspace",
-    "UnitWorkspace",
     "WorkspaceFile",
-    "build_lines_units",
-    "build_path_units",
-    "units_from_plan",
-    "make_unique_path",
     "WorkflowDefinition",
     "WorkflowLoader",
     "WorkflowMeta",
     "WorkflowStep",
     "WorkflowSummary",
     "WorkflowValidationResult",
+    "resolve_workflow_definition",
     "VALID_SCOPES",
     "WorkflowValidationError",
     "ModuleDefinition",
@@ -106,6 +92,8 @@ __all__ = [
     "VALID_MODULE_PLATFORMS",
     "current_platform",
     "PipelineExecutor",
+    "ExecutionSummary",
+    "UnitResult",
     "execute_workflow",
     "WorkflowScheduler",
     "PreparedStep",

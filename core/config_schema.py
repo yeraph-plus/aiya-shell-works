@@ -1,8 +1,7 @@
-"""Validates module CONFIG_SCHEMA and normalizes workflow step params.
+"""Validate module CONFIG_SCHEMA and normalize workflow step parameters.
 
-Copied from the legacy ``config_schema.py`` to preserve the 8 supported
-parameter types.  No scheme shift here — work to validate new atom/scope
-lives on the module manager side.
+The module contract supports eight field types. Numeric ranges use ``min``
+and ``max``; workflow preparation fills defaults before invoking a module.
 """
 
 from __future__ import annotations

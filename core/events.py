@@ -22,9 +22,11 @@ Design departures from the legacy ``PipelineEventBus``:
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterator
+import threading
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC
+from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
 LOGGER = logging.getLogger(__name__)
@@ -32,14 +34,17 @@ LOGGER = logging.getLogger(__name__)
 PipelineEventType = Literal["success", "message", "hint", "warning", "error"]
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, frozen=True)
 class PipelineEvent:
     """Immutable single record flowing through the bus."""
 
     slug: str
     type: PipelineEventType
     text: str
-    data: dict[str, Any] = field(default_factory=dict)
+    data: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "data", MappingProxyType(dict(self.data)))
 
 
 class LogSink(Protocol):
@@ -47,11 +52,16 @@ class LogSink(Protocol):
 
     def write(self, event: PipelineEvent) -> None: ...
 
+    def close(self) -> None: ...
+
 
 class NullSink:
     """Default no-op sink for in-memory operations."""
 
     def write(self, event: PipelineEvent) -> None:  # noqa: D401
+        return None
+
+    def close(self) -> None:
         return None
 
 
@@ -73,6 +83,7 @@ class EventBus:
         self._sink: LogSink = sink or NullSink()
         self._retain = retain
         self._error_events: list[PipelineEvent] = []
+        self._lock = threading.RLock()
 
     def log(
         self,
@@ -84,11 +95,13 @@ class EventBus:
         """Append an event, push it to every listener, persist to sink."""
 
         event = PipelineEvent(slug=slug, type=event_type, text=text, data=data or {})
-        if self._retain or event_type == "error":
-            self._events.append(event)
-        if event_type == "error":
-            self._error_events.append(event)
-        for listener in list(self._listeners):  # snapshot, listener may unsubscribe mid-loop
+        with self._lock:
+            if self._retain or event_type == "error":
+                self._events.append(event)
+            if event_type == "error":
+                self._error_events.append(event)
+            listeners = list(self._listeners)
+        for listener in listeners:
             try:
                 listener(event)
             except Exception:  # pragma: no cover - defensive isolation
@@ -102,29 +115,29 @@ class EventBus:
     def subscribe(self, listener: Listener) -> Unsubscribe:
         """Register a listener and return an unsubscribe closure."""
 
-        if listener not in self._listeners:
-            self._listeners.append(listener)
+        with self._lock:
+            if listener not in self._listeners:
+                self._listeners.append(listener)
 
         def _unsubscribe() -> None:
-            try:
-                self._listeners.remove(listener)
-            except ValueError:
-                pass
+            self.unsubscribe(listener)
 
         return _unsubscribe
 
     def unsubscribe(self, listener: Listener) -> None:
         """Remove a listener (idempotent)."""
 
-        try:
-            self._listeners.remove(listener)
-        except ValueError:
-            pass
+        with self._lock:
+            try:
+                self._listeners.remove(listener)
+            except ValueError:
+                pass
 
     def has_errors(self) -> bool:
         """Return True if any ``error`` event has been logged."""
 
-        return any(event.type == "error" for event in self._error_events)
+        with self._lock:
+            return bool(self._error_events)
 
     def iterate(self) -> Iterator[PipelineEvent]:
         """Read-only iteration over the historical event stream.
@@ -133,19 +146,26 @@ class EventBus:
         -- newly appended events will only appear to callers that re-iterate.
         """
 
-        return iter(list(self._events))
+        with self._lock:
+            return iter(list(self._events))
 
     def reset(self) -> None:
         """Clear stored events; do not touch listeners (runtime owns them)."""
 
-        self._events.clear()
-        self._error_events.clear()
+        with self._lock:
+            self._events.clear()
+            self._error_events.clear()
+
+    def clear_listeners(self) -> None:
+        with self._lock:
+            self._listeners.clear()
 
     def __iter__(self) -> Iterator[PipelineEvent]:
         return self.iterate()
 
     def __len__(self) -> int:
-        return len(self._events)
+        with self._lock:
+            return len(self._events)
 
 
 class InMemorySink:
@@ -153,9 +173,14 @@ class InMemorySink:
 
     def __init__(self) -> None:
         self.events: list[PipelineEvent] = []
+        self._lock = threading.Lock()
 
     def write(self, event: PipelineEvent) -> None:
-        self.events.append(event)
+        with self._lock:
+            self.events.append(event)
+
+    def close(self) -> None:
+        return None
 
 
 class JSONLFileSink:
@@ -181,7 +206,7 @@ class JSONLFileSink:
             "slug": event.slug,
             "type": event.type,
             "text": event.text,
-            "data": event.data,
+            "data": dict(event.data),
         }
         line = self._json.dumps(record, ensure_ascii=False)
         with self._lock:

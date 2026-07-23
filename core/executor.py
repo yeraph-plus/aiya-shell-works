@@ -15,16 +15,17 @@ values control how inputs are batched into tasks:
   ``ctx.shared["input_lines"]``.
 
 Cancellation is checked at step boundaries.  Module return-value contract
-is ``PipelineContext | None | dict[str, ctx]``.
+is ``PipelineContext | None``; a returned context must retain the current
+unit workspace.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from .config_schema import (
     ConfigSchemaValidationError,
@@ -33,20 +34,43 @@ from .config_schema import (
 )
 from .context import PipelineContext
 from .exceptions import (
+    FileHandlingError,
     ModuleExecutionError,
     PipelineCancelledError,
     PipelineExecutionError,
-    WorkflowValidationError,
 )
-from .files import ExecutionWorkspace, UnitWorkspace, units_from_plan, validate_output_separation
+from .files import ExecutionWorkspace, PreparedWorkspaceUnit, UnitWorkspace, units_from_plan, validate_output_separation
 from .input import InputPlan, resolve_input
 from .module_manager import ModuleDefinition, ModuleManager, current_platform
+from .planning import ExecutionUnit, PathInput
 from .runtime import PipelineRuntime
-from .workflow_loader import WorkflowDefinition, WorkflowLoader
+from .workflow_loader import WorkflowDefinition, resolve_workflow_definition
 
 EventCallback = Callable[[Any], None]
 ProgressCallback = Callable[[dict[str, Any]], None]
 CancelCallback = Callable[[], bool]
+
+
+class UnitResult(TypedDict, total=False):
+    success: bool
+    unit: str | None
+    working_path: str
+    original_input: str | None
+    error: str
+    type: str
+
+
+class ExecutionSummary(TypedDict):
+    success: bool
+    cancelled: bool
+    processed_units: int
+    successful_units: int
+    failed_units: int
+    errors: list[dict[str, Any]]
+    results: list[dict[str, Any]]
+    workflow: str
+    scope: int
+    output_dir: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,44 +136,63 @@ def prepare_steps(
 def build_units(
     workflow: WorkflowDefinition,
     plan: InputPlan,
-) -> list[dict[str, Any]]:
+) -> list[ExecutionUnit]:
     """Build unit dicts from a plan."""
     if workflow.scope == 0:
         if plan.kind == "none":
-            return [{"path": None, "source_root": None}]
+            return [ExecutionUnit(kind="none")]
         if plan.kind == "line":
-            return [{"lines": list(plan.lines)}]
-        return [{"__shared_paths__": list(plan.files), "recurse": plan.recurse, "source_root": None}]
+            return [ExecutionUnit(kind="line", layout="shared", lines=plan.lines)]
+        paths = tuple(PathInput(path=path) for path in plan.files)
+        return [ExecutionUnit(kind="path", layout="shared", paths=paths)]
     if workflow.scope == 1:
-        return units_from_plan(plan)
+        return _single_units(plan)
     if plan.kind == "line":
         return _build_line_batches(list(plan.lines), workflow.scope)
     if plan.kind == "none":
-        return [{"path": None, "source_root": None}]
-    return _build_path_batches(units_from_plan(plan), workflow.scope)
+        return [ExecutionUnit(kind="none")]
+    return _build_path_batches(_single_units(plan), workflow.scope)
 
 
 def prepare_context(
     plan: InputPlan,
     workspace: ExecutionWorkspace,
-    unit: dict[str, Any],
+    unit: ExecutionUnit,
     *,
     shared: Mapping[str, Any] | None,
     direct_mode: bool = False,
     move_mode: bool = False,
     reference_mode: bool = False,
     unit_workspace: UnitWorkspace | None = None,
+    unit_index: int = 1,
 ) -> PipelineContext:
     """Build a ``PipelineContext`` for a unit."""
-    return workspace.prepare_unit(
-        int(unit.get("batch_index", 1)),
+    prepared = workspace.prepare_unit(
+        unit_index,
         unit,
-        plan,
         direct_mode=direct_mode,
         move_mode=move_mode,
         reference_mode=reference_mode,
         shared=shared,
         unit_workspace=unit_workspace,
+    )
+    return _context_from_prepared(prepared, shared)
+
+
+def _context_from_prepared(
+    prepared: PreparedWorkspaceUnit,
+    shared: Mapping[str, Any] | None,
+) -> PipelineContext:
+    payload = dict(shared or {})
+    if prepared.input_lines:
+        payload["input_lines"] = list(prepared.input_lines)
+        if len(prepared.input_lines) == 1:
+            payload["input_line"] = prepared.input_lines[0]
+    return PipelineContext(
+        workspace=prepared.workspace,
+        original_input=prepared.original_input,
+        shared=payload,
+        source_root=prepared.source_root,
     )
 
 
@@ -163,12 +206,10 @@ def resolve_step_result(
     if result is None:
         return fallback
     if isinstance(result, PipelineContext):
+        if result.workspace is not fallback.workspace:
+            raise PipelineExecutionError(f"step {step_name} returned a context from another workspace")
         return result
-    if isinstance(result, Mapping) and isinstance(result.get("context"), PipelineContext):
-        return result["context"]
-    raise PipelineExecutionError(
-        f"step {step_name} returned invalid value: must be PipelineContext, None, or dict with context key"
-    )
+    raise PipelineExecutionError(f"step {step_name} returned invalid value: must be PipelineContext or None")
 
 
 class PipelineExecutor:
@@ -204,14 +245,14 @@ class PipelineExecutor:
         lines_text: str | None = None,
         lines_file: str | Path | None = None,
         move_mode: bool = False,
-    ) -> dict[str, Any]:
+    ) -> ExecutionSummary:
         """Run a workflow.  Returns a summary dict."""
 
         active_runtime = self.runtime
         if self.event_listener is not None:
             active_runtime.subscribe(self.event_listener)
 
-        definition = _resolve_workflow_definition(workflow)
+        definition = resolve_workflow_definition(workflow)
         plan = input_plan or resolve_input(
             files=files,
             recurse=recurse,
@@ -227,12 +268,11 @@ class PipelineExecutor:
             plan.kind == "path"
             and not direct_mode
             and not move_mode
-            and not any(
-                step.supported and step.module_definition.access == "read_write"
-                for step in steps
-            )
+            and not any(step.supported and step.module_definition.access == "read_write" for step in steps)
         )
         units = build_units(definition, plan)
+        if direct_mode and plan.kind == "path" and definition.scope != 1:
+            raise FileHandlingError("direct_mode 仅支持 scope=1 的路径单元")
         total = len(units)
         errors: list[dict[str, Any]] = []
         successful = 0
@@ -283,7 +323,7 @@ class PipelineExecutor:
 
         completed = successful + len(errors)
         success = not errors and not cancelled
-        summary = {
+        summary: ExecutionSummary = {
             "success": success,
             "cancelled": cancelled,
             "processed_units": total,
@@ -309,7 +349,7 @@ class PipelineExecutor:
         definition: WorkflowDefinition,
         plan: InputPlan,
         steps: list[PreparedStep],
-        units: list[dict[str, Any]],
+        units: list[ExecutionUnit],
         workspace: ExecutionWorkspace,
         direct_mode: bool,
         move_mode: bool,
@@ -340,9 +380,10 @@ class PipelineExecutor:
                     total_units=total,
                     steps=steps,
                 )
+                success_result = self._success_result(unit, final_ctx)
                 workspace.publish(unit_workspace)
                 successful += 1
-                results.append(self._success_result(unit, final_ctx))
+                results.append(success_result)
                 self._report_progress(idx, total, _unit_display(unit), "completed")
             except PipelineCancelledError:
                 if not move_mode and not direct_mode:
@@ -362,7 +403,7 @@ class PipelineExecutor:
         *,
         plan: InputPlan,
         steps: list[PreparedStep],
-        units: list[dict[str, Any]],
+        units: list[ExecutionUnit],
         workspace: ExecutionWorkspace,
         direct_mode: bool,
         move_mode: bool,
@@ -371,51 +412,69 @@ class PipelineExecutor:
         results: list[dict[str, Any]],
         errors: list[dict[str, Any]],
     ) -> tuple[int, bool]:
-        futures: dict[Future[PipelineContext], tuple[int, dict[str, Any], UnitWorkspace, PipelineRuntime]] = {}
-        outcomes: dict[int, tuple[PipelineContext | None, Exception | None, dict[str, Any], UnitWorkspace]] = {}
+        futures: dict[Future[PipelineContext], tuple[int, ExecutionUnit, UnitWorkspace, PipelineRuntime]] = {}
+        outcomes: dict[int, tuple[dict[str, Any] | None, Exception | None, ExecutionUnit, UnitWorkspace]] = {}
         total = len(units)
-        with ThreadPoolExecutor(max_workers=self.concurrency) as pool:
-            for idx, unit in enumerate(units, start=1):
-                if self._is_cancelled():
-                    break
-                unit_workspace = workspace.create_unit(idx)
-                runtime = self.runtime.fork()
-                future = pool.submit(
-                    self._execute_unit,
-                    plan=plan,
-                    unit=unit,
-                    unit_workspace=unit_workspace,
-                    workspace=workspace,
-                    direct_mode=direct_mode,
-                    move_mode=move_mode,
-                    reference_mode=reference_mode,
-                    shared=shared,
-                    runtime=runtime,
-                    unit_index=idx,
-                    total_units=total,
-                    steps=steps,
-                )
-                futures[future] = (idx, unit, unit_workspace, runtime)
+        indexed_units = iter(enumerate(units, start=1))
 
-            for future in as_completed(futures):
-                idx, unit, unit_workspace, runtime = futures[future]
-                try:
-                    outcomes[idx] = (future.result(), None, unit, unit_workspace)
-                    self._report_progress(len(outcomes), total, _unit_display(unit), "completed")
-                except Exception as exc:
-                    outcomes[idx] = (None, exc, unit, unit_workspace)
-                    status = "cancelled" if isinstance(exc, PipelineCancelledError) else "failed"
-                    self._report_progress(len(outcomes), total, _unit_display(unit), status)
-                finally:
-                    runtime.close()
+        def submit_next(pool: ThreadPoolExecutor) -> bool:
+            if self._is_cancelled():
+                return False
+            try:
+                idx, unit = next(indexed_units)
+            except StopIteration:
+                return False
+            unit_workspace = workspace.create_unit(idx)
+            runtime = self.runtime.fork()
+            future = pool.submit(
+                self._execute_unit,
+                plan=plan,
+                unit=unit,
+                unit_workspace=unit_workspace,
+                workspace=workspace,
+                direct_mode=direct_mode,
+                move_mode=move_mode,
+                reference_mode=reference_mode,
+                shared=shared,
+                runtime=runtime,
+                unit_index=idx,
+                total_units=total,
+                steps=steps,
+            )
+            futures[future] = (idx, unit, unit_workspace, runtime)
+            return True
+
+        with ThreadPoolExecutor(max_workers=self.concurrency, thread_name_prefix="pipeline") as pool:
+            for _ in range(min(self.concurrency, total)):
+                if not submit_next(pool):
+                    break
+
+            completed = 0
+            while futures:
+                done, _ = wait(futures, return_when=FIRST_COMPLETED)
+                for future in done:
+                    idx, unit, unit_workspace, runtime = futures.pop(future)
+                    completed += 1
+                    try:
+                        final_ctx = future.result()
+                        success_result = self._success_result(unit, final_ctx)
+                        workspace.publish(unit_workspace)
+                        outcomes[idx] = (success_result, None, unit, unit_workspace)
+                        self._report_progress(completed, total, _unit_display(unit), "completed")
+                    except Exception as exc:
+                        outcomes[idx] = (None, exc, unit, unit_workspace)
+                        status = "cancelled" if isinstance(exc, PipelineCancelledError) else "failed"
+                        self._report_progress(completed, total, _unit_display(unit), status)
+                    finally:
+                        runtime.close()
+                    submit_next(pool)
 
         successful = 0
         cancelled = self._is_cancelled()
         for idx in sorted(outcomes):
-            final_ctx, error, unit, unit_workspace = outcomes[idx]
-            if error is None and final_ctx is not None:
-                workspace.publish(unit_workspace)
-                results.append(self._success_result(unit, final_ctx))
+            outcome_result, error, unit, unit_workspace = outcomes[idx]
+            if error is None and outcome_result is not None:
+                results.append(outcome_result)
                 successful += 1
             elif isinstance(error, PipelineCancelledError):
                 cancelled = True
@@ -431,7 +490,7 @@ class PipelineExecutor:
         self,
         *,
         plan: InputPlan,
-        unit: dict[str, Any],
+        unit: ExecutionUnit,
         unit_workspace: UnitWorkspace,
         workspace: ExecutionWorkspace,
         direct_mode: bool,
@@ -453,6 +512,7 @@ class PipelineExecutor:
             move_mode=move_mode,
             reference_mode=reference_mode,
             unit_workspace=unit_workspace,
+            unit_index=unit_index,
         )
         return self._run_unit(
             ctx=ctx,
@@ -463,17 +523,17 @@ class PipelineExecutor:
         )
 
     @staticmethod
-    def _success_result(unit: dict[str, Any], ctx: PipelineContext) -> dict[str, Any]:
+    def _success_result(unit: ExecutionUnit, ctx: PipelineContext) -> dict[str, Any]:
         return {
             "success": True,
-            "unit": _unit_display(unit),
+            "unit": unit.display(),
             "working_path": str(ctx.current.path),
             "original_input": _display_name(ctx.original_input),
         }
 
     def _record_failure(
         self,
-        unit: dict[str, Any],
+        unit: ExecutionUnit,
         index: int,
         total: int,
         exc: Exception,
@@ -611,14 +671,14 @@ def execute_workflow(
     shared: Mapping[str, Any] | None = None,
     concurrency: int = 1,
     move_mode: bool = False,
-) -> dict[str, Any]:
+) -> ExecutionSummary:
     """Standalone runner for CLI callers and tests.
 
     Builds a fresh ``ModuleManager`` and ``PipelineRuntime`` each call.
     No GUI imports; safe under multiprocessing.
     """
 
-    definition = _resolve_workflow_definition(workflow, workflows_dir=workflows_dir)
+    definition = resolve_workflow_definition(workflow, workflows_dir=workflows_dir)
     plan = resolve_input(
         files=files,
         recurse=recurse,
@@ -659,58 +719,41 @@ def execute_workflow(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_workflow_definition(
-    workflow: WorkflowDefinition | Mapping[str, Any] | str | Path,
-    *,
-    workflows_dir: str | Path | None = None,
-) -> WorkflowDefinition:
-    if isinstance(workflow, WorkflowDefinition):
-        return workflow
-    loader_root = Path(workflows_dir).resolve() if workflows_dir is not None else Path.cwd() / "workflows"
-    loader = WorkflowLoader(loader_root)
-    if isinstance(workflow, Mapping):
-        result = loader.validate_document(workflow)
-        if not result.is_valid or result.workflow is None:
-            raise WorkflowValidationError(list(result.errors))
-        return result.workflow
-    path = Path(workflow)
-    if path.is_absolute():
-        loader = WorkflowLoader(path.parent)
-        return loader.load(path)
-    return loader.load(path)
-
-
 def _display_name(path: Path | str | None) -> str | None:
     return None if path is None else str(path)
 
 
-def _unit_display(unit: dict[str, Any]) -> str | None:
-    lines = unit.get("lines")
-    if lines is not None:
-        return f"[lines x{len(lines)}]"
-    line = unit.get("line")
-    if line is not None:
-        return f"[line] {line}"
-    batch_paths = unit.get("__batched_paths__")
-    if batch_paths is not None:
-        return f"[path batch x{len(batch_paths)}]"
-    shared_paths = unit.get("__shared_paths__")
-    if shared_paths is not None:
-        return f"[shared path x{len(shared_paths)}]"
-    return _display_name(unit.get("path"))
+def _unit_display(unit: ExecutionUnit) -> str | None:
+    return unit.display()
 
 
-def _build_line_batches(lines: list[str], batch_size: int) -> list[dict[str, Any]]:
-    return [{"lines": lines[index : index + batch_size]} for index in range(0, len(lines), batch_size)]
-
-
-def _build_path_batches(units: list[dict[str, Any]], batch_size: int) -> list[dict[str, Any]]:
-    batches: list[dict[str, Any]] = []
-    for batch_index, index in enumerate(range(0, len(units), batch_size), start=1):
-        batches.append(
-            {
-                "__batched_paths__": units[index : index + batch_size],
-                "batch_index": batch_index,
-            }
+def _single_units(plan: InputPlan) -> list[ExecutionUnit]:
+    if plan.kind == "none":
+        return [ExecutionUnit(kind="none")]
+    if plan.kind == "line":
+        return [ExecutionUnit(kind="line", lines=(line,)) for line in plan.lines]
+    return [
+        ExecutionUnit(
+            kind="path",
+            paths=(PathInput(path=Path(item["path"]), source_root=item.get("source_root")),),
         )
-    return batches
+        for item in units_from_plan(plan)
+    ]
+
+
+def _build_line_batches(lines: list[str], batch_size: int) -> list[ExecutionUnit]:
+    return [
+        ExecutionUnit(kind="line", layout="batch", lines=tuple(lines[index : index + batch_size]))
+        for index in range(0, len(lines), batch_size)
+    ]
+
+
+def _build_path_batches(units: list[ExecutionUnit], batch_size: int) -> list[ExecutionUnit]:
+    return [
+        ExecutionUnit(
+            kind="path",
+            layout="batch",
+            paths=tuple(path for unit in units[index : index + batch_size] for path in unit.paths),
+        )
+        for index in range(0, len(units), batch_size)
+    ]
