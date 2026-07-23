@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QButtonGroup,
@@ -137,9 +137,7 @@ class InfoTab(QWidget):
             button.setEnabled(editable)
         self.scope_spin.setReadOnly(not editable)
         self.scope_spin.setButtonSymbols(
-            QAbstractSpinBox.ButtonSymbols.UpDownArrows
-            if editable
-            else QAbstractSpinBox.ButtonSymbols.NoButtons
+            QAbstractSpinBox.ButtonSymbols.UpDownArrows if editable else QAbstractSpinBox.ButtonSymbols.NoButtons
         )
 
     # ------------------------------------------------------------------
@@ -186,10 +184,7 @@ class InfoTab(QWidget):
 
     def _select_atom_radio(self, atom: str, recurse: bool) -> None:
         for button in self.atom_button_group.buttons():
-            if (
-                button.property("atom_value") == atom
-                and bool(button.property("recurse_value")) == recurse
-            ):
+            if button.property("atom_value") == atom and bool(button.property("recurse_value")) == recurse:
                 button.setChecked(True)
                 self.atom_desc_label.setText(str(button.property("desc") or ""))
                 return

@@ -12,13 +12,13 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
+    QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
-    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
@@ -27,22 +27,11 @@ from PySide6.QtWidgets import (
 
 from core import InputInspector
 
-
 _DASHED_BORDER_STYLE = (
-    "QFrame#inputDashedFrame {"
-    "  border: 2px dashed #aab2bd;"
-    "  border-radius: 10px;"
-    "  background: #fafbfc;"
-    "}"
+    "QFrame#inputDashedFrame {  border: 2px dashed #aab2bd;  border-radius: 10px;  background: #fafbfc;}"
 )
 
-_SOLID_BORDER_STYLE = (
-    "QFrame#inputSolidFrame {"
-    "  border: 1px solid #aab2bd;"
-    "  border-radius: 8px;"
-    "  background: #fafbfc;"
-    "}"
-)
+_SOLID_BORDER_STYLE = "QFrame#inputSolidFrame {  border: 1px solid #aab2bd;  border-radius: 8px;  background: #fafbfc;}"
 
 
 class _DropFrame(QFrame):
@@ -126,6 +115,7 @@ class InputPanel(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._declared_atom: str | None = "none"
         self._atom = "none"
         self._recurse = False
 
@@ -180,7 +170,13 @@ class InputPanel(QWidget):
         self.add_folder_button = QPushButton("添加文件夹")
         self.remove_button = QPushButton("删除选中")
         self.clear_button = QPushButton("清空")
+        self.auto_mode_combo = QComboBox()
+        self.auto_mode_combo.addItem("路径输入", "file")
+        self.auto_mode_combo.addItem("文本输入", "line")
+        self.auto_mode_combo.addItem("无输入", "none")
+        self.auto_mode_combo.hide()
 
+        action_layout.addWidget(self.auto_mode_combo)
         action_layout.addWidget(self.add_files_button)
         action_layout.addWidget(self.add_folder_button)
         action_layout.addStretch(1)
@@ -198,18 +194,38 @@ class InputPanel(QWidget):
         self.input_list.model().rowsInserted.connect(self._emit_changed)
         self.input_list.model().rowsRemoved.connect(self._emit_changed)
         self.text_editor.textChanged.connect(self._emit_changed)
+        self.auto_mode_combo.currentIndexChanged.connect(self._on_auto_mode_changed)
 
     def _emit_changed(self, *_args: object) -> None:
         self.paths_changed.emit()
 
     _VALID_ATOMS = {"file", "folder", "line", "none"}
 
-    def set_atom(self, atom: str, recurse: bool) -> None:
+    @property
+    def current_atom(self) -> str:
+        return self._atom
+
+    def set_atom(self, atom: str | None, recurse: bool) -> None:
         """Set the input atom type and configure the UI accordingly."""
-        if atom not in self._VALID_ATOMS:
-            atom = "none"
-        self._atom = atom
+        declared_atom = atom if atom in self._VALID_ATOMS else None
+        if declared_atom != self._declared_atom:
+            self.clear()
+        self._declared_atom = declared_atom
         self._recurse = recurse
+        self.auto_mode_combo.setVisible(declared_atom is None)
+        self._atom = declared_atom or str(self.auto_mode_combo.currentData())
+        self._apply_atom()
+
+    def _on_auto_mode_changed(self, _index: int) -> None:
+        if self._declared_atom is not None:
+            return
+        self.clear()
+        self._atom = str(self.auto_mode_combo.currentData())
+        self._apply_atom()
+        self.paths_changed.emit()
+
+    def _apply_atom(self) -> None:
+        atom = self._atom
 
         wants_path = atom in {"file", "folder"}
         wants_text = atom == "line"
@@ -222,14 +238,16 @@ class InputPanel(QWidget):
         self.text_editor.setEnabled(wants_text)
         self._none_frame.setVisible(atom == "none")
 
-        is_file_recurse = atom == "file" and recurse
-        self.add_files_button.setVisible(wants_path and is_file_recurse)
-        self.add_folder_button.setVisible(wants_path)
+        auto_path = self._declared_atom is None and atom == "file"
+        allow_files = atom == "file"
+        allow_folders = atom == "folder" or auto_path or (atom == "file" and self._recurse)
+        self.add_files_button.setVisible(allow_files)
+        self.add_folder_button.setVisible(allow_folders)
         self.remove_button.setVisible(wants_path)
         self.clear_button.setVisible(True)
 
-        self.add_files_button.setEnabled(wants_path and is_file_recurse)
-        self.add_folder_button.setEnabled(wants_path)
+        self.add_files_button.setEnabled(allow_files)
+        self.add_folder_button.setEnabled(allow_folders)
         self.remove_button.setEnabled(wants_path)
         self.clear_button.setEnabled(atom != "none")
 
@@ -239,11 +257,14 @@ class InputPanel(QWidget):
     def set_running(self, running: bool) -> None:
         """Enable/disable controls based on execution state."""
         atom = self._atom
-        is_file_recurse = atom == "file" and self._recurse
         is_path_input = atom in {"file", "folder"}
+        auto_path = self._declared_atom is None and atom == "file"
+        allow_files = atom == "file"
+        allow_folders = atom == "folder" or auto_path or (atom == "file" and self._recurse)
 
-        self.add_files_button.setEnabled(not running and is_file_recurse)
-        self.add_folder_button.setEnabled(not running and is_path_input)
+        self.auto_mode_combo.setEnabled(not running)
+        self.add_files_button.setEnabled(not running and allow_files)
+        self.add_folder_button.setEnabled(not running and allow_folders)
         self.remove_button.setEnabled(not running and is_path_input)
         self.clear_button.setEnabled(not running and atom != "none")
         self._drop_frame.set_drop_enabled(not running and is_path_input)
@@ -261,11 +282,13 @@ class InputPanel(QWidget):
 
     def get_files(self) -> list[str]:
         """Get the list of input file paths."""
+        if self._atom not in {"file", "folder"}:
+            return []
         return [self.input_list.item(i).data(Qt.UserRole) for i in range(self.input_list.count())]
 
     def get_lines(self) -> str:
         """Get the text input lines."""
-        return self.text_editor.toPlainText()
+        return self.text_editor.toPlainText() if self._atom == "line" else ""
 
     def clear(self) -> None:
         """Clear all input."""
@@ -305,7 +328,7 @@ class InputPanel(QWidget):
         existing = {self.input_list.item(i).data(Qt.UserRole) for i in range(self.input_list.count())}
         resolved = [Path(p).resolve() for p in paths]
 
-        if self._atom == "folder":
+        if self._declared_atom == "folder":
             valid_paths = []
             invalid_paths = []
             for raw_path in paths:
@@ -343,7 +366,7 @@ class InputPanel(QWidget):
 
     def _choose_files(self) -> None:
         """Open file dialog to select input files."""
-        if self._atom != "file" or not self._recurse:
+        if self._atom != "file":
             return
         selected, _ = QFileDialog.getOpenFileNames(self, "选择输入文件")
         if selected:
@@ -351,6 +374,9 @@ class InputPanel(QWidget):
 
     def _choose_folder(self) -> None:
         """Open folder dialog to select input folder."""
+        auto_path = self._declared_atom is None and self._atom == "file"
+        if self._atom == "file" and not (auto_path or self._recurse):
+            return
         if self._atom not in {"file", "folder"}:
             return
         selected = QFileDialog.getExistingDirectory(self, "选择输入文件夹")

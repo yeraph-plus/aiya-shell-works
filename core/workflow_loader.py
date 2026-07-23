@@ -1,4 +1,4 @@
-"""Workflow YAML loading, saving, listing, and validation.
+"""Workflow YAML loading, listing, and validation.
 
 Current YAML schema:
 
@@ -115,31 +115,10 @@ class WorkflowValidationResult:
 
 
 class WorkflowLoader:
-    """Load, save, list, and validate workflows under a root directory."""
+    """Load, list, and validate workflows under a root directory."""
 
     def __init__(self, workflows_dir: str | Path) -> None:
         self.workflows_dir = Path(workflows_dir).resolve()
-
-    def ensure_workflows_dir(self) -> Path:
-        self.workflows_dir.mkdir(parents=True, exist_ok=True)
-        return self.workflows_dir
-
-    def new_workflow(
-        self,
-        name: str = "New Workflow",
-        *,
-        atom: str | None = "file",
-        scope: int = 1,
-        recurse: bool = False,
-        description: str = "",
-    ) -> WorkflowDefinition:
-        return WorkflowDefinition(
-            meta=WorkflowMeta(name=name, description=description),
-            atom=atom,
-            scope=scope,
-            recurse=recurse,
-            steps=(),
-        )
 
     def list_workflows(self, *, include_invalid: bool = False) -> list[WorkflowSummary]:
         if not self.workflows_dir.exists():
@@ -188,21 +167,6 @@ class WorkflowLoader:
         if not result.is_valid or result.workflow is None:
             raise WorkflowValidationError(list(result.errors))
         return result.workflow
-
-    def save(
-        self,
-        workflow: WorkflowDefinition | Mapping[str, Any],
-        name: str | Path | None = None,
-    ) -> Path:
-        result = self.validate_document(workflow)
-        if not result.is_valid or result.workflow is None:
-            raise WorkflowValidationError(list(result.errors))
-        target_name = name or self.default_filename(result.workflow.meta.name)
-        target = self._resolve_path(target_name, create_parent=True)
-        serialized = result.workflow.to_dict()
-        with target.open("w", encoding="utf-8", newline="\n") as fh:
-            yaml.safe_dump(serialized, fh, allow_unicode=True, sort_keys=False, default_flow_style=False)
-        return target
 
     def validate_document(
         self,
@@ -317,10 +281,8 @@ class WorkflowLoader:
         )
         return WorkflowValidationResult(is_valid=True, errors=(), workflow=definition)
 
-    def _resolve_path(self, name: str | Path, *, create_parent: bool = False) -> Path:
+    def _resolve_path(self, name: str | Path) -> Path:
         raw = Path(name)
-        # An absolute path under workflows_dir is supported directly; absolute
-        # paths elsewhere are rejected to keep writes contained.
         if raw.is_absolute():
             candidate = raw if raw.suffix.lower() in WORKFLOW_SUFFIXES else raw.with_suffix(".yaml")
             try:
@@ -335,16 +297,7 @@ class WorkflowLoader:
                 candidate.relative_to(self.workflows_dir.resolve())
             except ValueError as exc:
                 raise ValueError("Workflow path must stay within the workflows directory.") from exc
-        if create_parent:
-            candidate.parent.mkdir(parents=True, exist_ok=True)
-            self.ensure_workflows_dir()
         return candidate
-
-    @staticmethod
-    def default_filename(name: str) -> str:
-        slug = "".join(c.lower() if c.isalnum() else "-" for c in name.strip())
-        cleaned = "-".join(part for part in slug.split("-") if part)
-        return f"{cleaned or 'workflow'}.yaml"
 
 
 def resolve_workflow_definition(

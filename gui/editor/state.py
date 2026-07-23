@@ -163,6 +163,10 @@ class WorkflowDraft:
             self.steps = []
 
     @classmethod
+    def new(cls) -> WorkflowDraft:
+        return cls(name="New Workflow", atom="file")
+
+    @classmethod
     def from_workflow(cls, workflow: WorkflowDefinition) -> WorkflowDraft:
         return cls(
             name=workflow.meta.name,

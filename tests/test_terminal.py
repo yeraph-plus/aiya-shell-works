@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from core import PipelineRuntime
-from core.terminal import TerminalResult, TerminalSession, TerminalSessionRegistry
+from core.terminal import TerminalResult, TerminalSession, TerminalSessionRegistry, _windows_subprocess_kwargs
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -43,6 +43,16 @@ def test_terminal_session_registry_register_unregister() -> None:
 def test_terminal_session_rejects_empty_command() -> None:
     with pytest.raises(ValueError):
         TerminalSession(cmd=[], runtime=PipelineRuntime())
+
+
+def test_windows_subprocess_is_hidden_by_default() -> None:
+    options = _windows_subprocess_kwargs(show_console=False)
+    assert options["creationflags"] & 0x08000000
+
+
+def test_windows_subprocess_console_can_be_requested() -> None:
+    options = _windows_subprocess_kwargs(show_console=True)
+    assert not options["creationflags"] & 0x08000000
 
 
 def test_runtime_spawn_emits_started_output_finished(tmp_path: Path, runtime: PipelineRuntime) -> None:

@@ -85,6 +85,9 @@ line-ending = "auto"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-q"
+markers = [
+    "gui: tests requiring the optional PySide6 GUI dependency",
+]
 
 [tool.mypy]
 python_version = "3.11"

@@ -6,6 +6,7 @@ from pathlib import Path
 import core
 
 CORE_DIR = Path(__file__).resolve().parents[1] / "core"
+GUI_DIR = Path(__file__).resolve().parents[1] / "gui"
 
 
 def _runtime_imports(path: Path) -> set[str]:
@@ -61,3 +62,22 @@ def test_scheduler_does_not_import_executor_private_symbols() -> None:
         for alias in node.names
     }
     assert not any(name.startswith("_") for name in imported)
+
+
+def test_gui_execution_only_depends_on_scheduler_surface() -> None:
+    source = (GUI_DIR / "widgets" / "execution_controller.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    core_imports = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "core"
+        for alias in node.names
+    }
+    assert "WorkflowScheduler" in core_imports
+    assert "PipelineExecutor" not in core_imports
+    assert "PipelineRuntime" not in core_imports
+
+
+def test_core_workflow_loader_has_no_authoring_surface() -> None:
+    for name in {"ensure_workflows_dir", "new_workflow", "save", "default_filename"}:
+        assert not hasattr(core.WorkflowLoader, name)

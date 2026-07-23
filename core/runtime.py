@@ -181,6 +181,7 @@ class PipelineRuntime:
         exit_pattern: str | None = None,
         exit_action: str = "write_newline",
         shell: bool = False,
+        show_console: bool = False,
         timeout: float | None = None,
     ) -> TerminalResult:
         """Spawn ``command`` in a PTY (or subprocess fallback) and block.
@@ -196,6 +197,7 @@ class PipelineRuntime:
             exit_pattern=exit_pattern,
             exit_action=exit_action,
             shell=shell,
+            show_console=show_console,
         )
         try:
             return session.wait(timeout=timeout)
@@ -212,6 +214,7 @@ class PipelineRuntime:
         exit_pattern: str | None = None,
         exit_action: str = "write_newline",
         shell: bool = False,
+        show_console: bool = False,
     ) -> TerminalSession:
         """Start a live child session and return immediately."""
 
@@ -223,6 +226,7 @@ class PipelineRuntime:
             exit_pattern=exit_pattern,
             exit_action=exit_action,
             shell=shell,
+            show_console=show_console,
             on_finished=self._sessions.unregister,
         )
         self._sessions.register(session)

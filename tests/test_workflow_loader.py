@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from core import WorkflowDefinition, WorkflowLoader, WorkflowMeta, WorkflowStep
+from core import WorkflowDefinition, WorkflowLoader, WorkflowMeta
 
 
 @pytest.fixture()
@@ -121,19 +121,15 @@ def test_validate_step_must_be_mapping(loader: WorkflowLoader) -> None:
     assert not result.is_valid
 
 
-def test_save_and_load_roundtrip(tmp_path: Path) -> None:
-    """Round trip via a real loader that writes/reads YAML."""
+def test_load_real_yaml_document(tmp_path: Path) -> None:
     loader = WorkflowLoader(tmp_path / "workflows")
-    loader.ensure_workflows_dir()
-    wf = WorkflowDefinition(
-        meta=WorkflowMeta(name="Round", description="roundtest"),
-        atom="line",
-        scope=1,
-        steps=(WorkflowStep(module="demo", name="x", params={"a": 1}),),
-        recurse=False,
+    loader.workflows_dir.mkdir()
+    (loader.workflows_dir / "round.yaml").write_text(
+        "meta:\n  name: Round\natom: line\nscope: 1\nrecurse: false\n"
+        "steps:\n  - module: demo\n    name: x\n    params:\n      a: 1\n",
+        encoding="utf-8",
     )
-    saved = loader.save(wf, "round.yaml")
-    loaded = loader.load(saved.name)
+    loaded = loader.load("round.yaml")
     assert loaded.atom == "line"
     assert loaded.steps[0].module == "demo"
     assert loaded.steps[0].params == {"a": 1}
@@ -147,18 +143,11 @@ def test_path_beyond_workflows_dir_rejected(tmp_path: Path) -> None:
 
 def test_list_workflows_includes_invalid_flag(tmp_path: Path) -> None:
     ldr = WorkflowLoader(tmp_path / "workflows")
-    ldr.ensure_workflows_dir()
-    # Valid file:
-    ldr.save(
-        WorkflowDefinition(
-            meta=WorkflowMeta(name="A"),
-            atom="file",
-            scope=1,
-            steps=(),
-        ),
-        "a.yaml",
+    ldr.workflows_dir.mkdir()
+    (ldr.workflows_dir / "a.yaml").write_text(
+        "meta:\n  name: A\natom: file\nscope: 1\nsteps: []\n",
+        encoding="utf-8",
     )
-    # Invalid YAML:
     (tmp_path / "workflows" / "bad.yaml").write_text(
         "meta:\n  name: Bad\natom: bogus\nscope: x\nsteps: []\n", encoding="utf-8"
     )

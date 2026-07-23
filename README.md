@@ -1,6 +1,6 @@
 # AIYA Shell Worker Platform
 
-按**单向管道**模型设计的模块化批量任务工作流平台，通过 YAML 编排步骤，对文件或文本输入执行批量处理、自动化任务。CLI 驱动，可选桌面 GUI，跨平台。
+按**单向管道**模型设计的模块化批量任务工作流平台，通过 YAML 编排步骤，对文件或文本输入执行批量处理、自动化任务。CLI 只执行 YAML；可选桌面 GUI 负责项目选择、工作流编辑和调度执行，跨平台。
 
 ```mermaid
 flowchart LR
@@ -63,6 +63,18 @@ python main.py example-line-echo.yaml \
 python main.py example-external-tool.yaml \
   --files ./input --recurse --output-dir ./out
 ```
+
+### 桌面 GUI
+
+```bash
+python main_gui.pyw
+# 安装后也可使用：
+shell-worker-gui --project-dir /path/to/project
+```
+
+GUI 项目目录包含 `workflows/`，并使用项目自身的 `modules/`；安装式运行在项目未提供模块目录时可使用已安装的内置模块。当前项目路径由 `QSettings` 保存，也可从“项目”菜单切换。工作流编辑器只向当前项目的 `workflows/` 原子写入 YAML，外部 YAML 导入后先成为未保存草稿。
+
+执行入口只接受已保存的 YAML 文件。GUI 在工作线程中直接调用 `WorkflowScheduler`，输入控件、监听、定时和并发参数只负责构造调度请求；内核仍按 YAML 与实际输入推导执行形状，不处理编辑器状态。外部工具输出合并到主日志区域，Windows 子进程默认隐藏命令窗口。
 
 ## 核心模型
 
@@ -164,7 +176,7 @@ steps:
 
 ## 编写新模块 / 项目结构参考
 
-`core/` 为项目内核实现，从 `main.py` 启动或被 `main_gui.pyw` 调用。
+`core/` 为项目内核实现。CLI 由 `main.py` 加载 YAML 后调用；GUI 保存 YAML 后通过 `WorkflowScheduler` 调用，不把编辑器状态传入内核。
 
 `modules/` 下每个 `.py` 文件为一个模块，可配置为输入处理模块 / 文件处理模块 / 纯执行（无输入）模块。
 
@@ -180,7 +192,7 @@ steps:
 
 `CONFIG_SCHEMA` 保持 JSON-Schema 风格根结构：`type: object`、`properties` 与可选 `required`。数值范围键使用项目约定的 `min` / `max`。内核据此校验工作流参数，GUI 使用同一结构生成输入控件。
 
-外部命令可用支持 `timeout` 的阻塞式 `runtime.spawn()`，或用 `runtime.start()` 获取支持 `wait()`、`write()`、`terminate()` 的实时会话。命令参数列表直接执行；显式 `shell=True` 时 Windows 使用 `cmd.exe`，Linux/macOS 使用 `/bin/sh -lc`。`WorkflowScheduler.run()` 为同步入口，同一实例拒绝并发重入；并发度只控制 executor 内同时在途的处理单元数量。
+外部命令可用支持 `timeout` 的阻塞式 `runtime.spawn()`，或用 `runtime.start()` 获取支持 `wait()`、`write()`、`terminate()` 的实时会话。命令参数列表直接执行；显式 `shell=True` 时 Windows 使用 `cmd.exe`，Linux/macOS 使用 `/bin/sh -lc`。Windows 默认 `show_console=False` 隐藏子进程命令窗口，需要交互式控制台时可显式开启。`WorkflowScheduler.run()` 为同步入口，同一实例拒绝并发重入；并发度只控制 executor 内同时在途的处理单元数量。
 
 ## 内置模块可用性
 
@@ -191,11 +203,13 @@ steps:
 ## 验证
 
 ```bash
+python -m pytest -m "not gui"          # 核心、CLI 与模块门禁，无 PySide6 要求
+QT_QPA_PLATFORM=offscreen python -m pytest -m gui  # 可选 GUI 门禁
 python -m pytest --cov=core --cov-report=json:coverage.json
 python scripts/check_coverage.py coverage.json
 python scripts/verify.py
 ```
 
-覆盖率门禁要求 `core` 整体不低于 85%，`context/events/executor/files/runtime/scheduler` 各自不低于 90%。`scripts/verify.py` 对默认 `verify_*` 与 `cycle-counter` 工作流执行端到端内容及终端事件验收；`tests/test_builtin_modules.py` 检查全部内置模块注册和无需专有外部工具的关键工作区路径。
+覆盖率门禁要求 `core` 整体不低于 85%，`context/events/executor/files/runtime/scheduler` 各自不低于 90%。GUI 门禁覆盖项目路径持久化、输入模式、窗口构造，以及 QThread 中从 YAML 到 Scheduler、产物和外部工具日志的完整路径。`scripts/verify.py` 对默认 `verify_*` 与 `cycle-counter` 工作流执行端到端内容及终端事件验收；`tests/test_builtin_modules.py` 检查全部内置模块注册和无需专有外部工具的关键工作区路径。
 
 更多实现细节请阅读 `AGENTS.md`。

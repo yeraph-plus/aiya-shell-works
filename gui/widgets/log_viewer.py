@@ -78,9 +78,7 @@ class LogViewer(QWidget):
         self._block_count += 1
         self.log_output.append(combined)
         self._trim_if_needed()
-        self.log_output.verticalScrollBar().setValue(
-            self.log_output.verticalScrollBar().maximum()
-        )
+        self.log_output.verticalScrollBar().setValue(self.log_output.verticalScrollBar().maximum())
 
     def _trim_if_needed(self) -> None:
         if self._block_count <= MAX_VISIBLE_BLOCKS:
@@ -88,8 +86,6 @@ class LogViewer(QWidget):
         doc = self.log_output.document()
         cursor = doc.find('<div style="margin:0;padding:1px 6px;white-space:pre-wrap;')
         if not cursor.isNull():
-            cursor.movePosition(
-                cursor.MoveOperation.End, cursor.KeepAnchor
-            )
+            cursor.movePosition(cursor.MoveOperation.End, cursor.KeepAnchor)
             cursor.removeSelectedText()
             self._block_count -= 1

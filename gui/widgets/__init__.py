@@ -5,7 +5,6 @@ from .dynamic_form import DynamicParameterForm
 from .execution_controller import ExecutionController
 from .input_panel import InputPanel
 from .log_viewer import LogViewer
-from .terminal_window import TerminalWindow
 
 __all__ = [
     "ConfigPanel",
@@ -13,5 +12,4 @@ __all__ = [
     "ExecutionController",
     "InputPanel",
     "LogViewer",
-    "TerminalWindow",
 ]

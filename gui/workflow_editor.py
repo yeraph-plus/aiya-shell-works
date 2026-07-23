@@ -21,10 +21,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core import ModuleManager, WorkflowDefinition, WorkflowLoader
+from core import ModuleManager, WorkflowDefinition
 from gui.editor.info_tab import InfoTab
-from gui.editor.steps_tab import StepsTab
 from gui.editor.state import WorkflowDraft
+from gui.editor.steps_tab import StepsTab
+from gui.workflow_store import WorkflowAuthoringStore
 
 
 class WorkflowEditor(QMainWindow):
@@ -34,16 +35,16 @@ class WorkflowEditor(QMainWindow):
 
     def __init__(
         self,
-        workflow_loader: WorkflowLoader,
+        workflow_store: WorkflowAuthoringStore,
         module_manager: ModuleManager,
         workflow: WorkflowDefinition | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.workflow_loader = workflow_loader
+        self.workflow_store = workflow_store
         self.module_manager = module_manager
         self._is_new = workflow is None
-        self.draft = WorkflowDraft.from_workflow(workflow or self.workflow_loader.new_workflow())
+        self.draft = WorkflowDraft.from_workflow(workflow) if workflow is not None else WorkflowDraft.new()
         self._dirty = False
 
         self.setAttribute(Qt.WA_DeleteOnClose, True)
@@ -81,8 +82,7 @@ class WorkflowEditor(QMainWindow):
 
         self._bottom_warning_label = QLabel()
         self._bottom_warning_label.setStyleSheet(
-            "background: #fdf2f2; color: #c0392b; padding: 6px 12px;"
-            "border-radius: 4px; font-size: 10pt;"
+            "background: #fdf2f2; color: #c0392b; padding: 6px 12px;border-radius: 4px; font-size: 10pt;"
         )
         self._bottom_warning_label.setWordWrap(True)
         self._bottom_warning_label.hide()
@@ -118,13 +118,13 @@ class WorkflowEditor(QMainWindow):
         selected_path, _ = QFileDialog.getOpenFileName(
             self,
             "打开工作流",
-            str(self.workflow_loader.workflows_dir),
+            str(self.workflow_store.workflows_dir),
             "Workflow Files (*.yaml *.yml)",
         )
         if not selected_path:
             return
-        workflow = self.workflow_loader.load(Path(selected_path))
-        self._is_new = False
+        workflow = self.workflow_store.import_workflow(Path(selected_path))
+        self._is_new = True
         self.draft = WorkflowDraft.from_workflow(workflow)
         self._load_draft()
         self.statusBar().showMessage(f"已打开 {Path(selected_path).name}")
@@ -136,11 +136,11 @@ class WorkflowEditor(QMainWindow):
 
     def save_workflow_as(self) -> Path | None:
         self.info_tab.sync_to_draft()
-        default_name = self.workflow_loader.default_filename(self.draft.name or "workflow")
+        default_name = self.workflow_store.default_filename(self.draft.name or "workflow")
         selected_path, _ = QFileDialog.getSaveFileName(
             self,
             "另存为",
-            str(self.workflow_loader.workflows_dir / default_name),
+            str(self.workflow_store.workflows_dir / default_name),
             "Workflow Files (*.yaml *.yml)",
         )
         if not selected_path:
@@ -151,8 +151,7 @@ class WorkflowEditor(QMainWindow):
         self.info_tab.sync_to_draft()
         workflow = self.draft.to_workflow_definition()
         try:
-            relative_target = target_path.resolve().relative_to(self.workflow_loader.workflows_dir)
-            saved_path = self.workflow_loader.save(workflow, relative_target)
+            saved_path = self.workflow_store.save(workflow, target_path)
         except Exception as exc:  # pragma: no cover - UI feedback path
             self._show_bottom_warning(f"保存失败: {exc}")
             self.statusBar().showMessage("保存失败", 3000)

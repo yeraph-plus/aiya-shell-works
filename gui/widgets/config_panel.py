@@ -31,9 +31,9 @@ from core import WorkflowDefinition, WorkflowLoader, WorkflowSummary
 class ConfigPanel(QWidget):
     """Panel for workflow execution configuration."""
 
-    workflow_changed = Signal(object)     # WorkflowDefinition | None
+    workflow_changed = Signal(object)  # WorkflowDefinition | None
     refresh_requested = Signal()
-    edit_requested = Signal(object)       # WorkflowDefinition | None
+    edit_requested = Signal(object)  # WorkflowDefinition | None
     output_dir_changed = Signal(str)
     watch_dir_changed = Signal(str)
     cron_changed = Signal(str)
@@ -196,9 +196,7 @@ class ConfigPanel(QWidget):
         self.concurrency_spinbox.valueChanged.connect(
             lambda v: (self._settings.setValue("concurrency", v), self.concurrency_changed.emit(v))
         )
-        self.cron_input.textChanged.connect(
-            lambda t: (self._settings.setValue("cron", t), self.cron_changed.emit(t))
-        )
+        self.cron_input.textChanged.connect(lambda t: (self._settings.setValue("cron", t), self.cron_changed.emit(t)))
 
     def _restore_settings(self) -> None:
         saved_dir = self._settings.value("output_dir", "")

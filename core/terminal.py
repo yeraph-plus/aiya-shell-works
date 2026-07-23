@@ -92,6 +92,7 @@ class TerminalSession:
         exit_pattern: str | None = None,
         exit_action: str = "write_newline",
         shell: bool = False,
+        show_console: bool = False,
         on_finished: Callable[[TerminalSession], None] | None = None,
     ) -> None:
         if isinstance(cmd, str):
@@ -107,6 +108,7 @@ class TerminalSession:
         self.env.setdefault("PYTHONUTF8", "1")
         self.env.update({key: str(value) for key, value in (env or {}).items()})
         self.shell = shell
+        self.show_console = show_console
         self._runtime = runtime
         self._exit_pattern = exit_pattern
         self._exit_action = exit_action
@@ -283,7 +285,7 @@ class TerminalSession:
     def _start_subprocess(self) -> None:
         kwargs: dict[str, Any] = {}
         if sys.platform == "win32":
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            kwargs.update(_windows_subprocess_kwargs(self.show_console))
         else:
             kwargs["start_new_session"] = True
         try:
@@ -413,3 +415,21 @@ class TerminalSession:
 
 def get_session(runtime: Any, session_id: str) -> TerminalSession | None:
     return runtime.sessions.get(session_id)
+
+
+def _windows_subprocess_kwargs(show_console: bool) -> dict[str, Any]:
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+    options: dict[str, Any] = {"creationflags": creationflags}
+    if show_console:
+        return options
+
+    options["creationflags"] |= getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    startupinfo_factory = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo_factory is None:
+        return options
+
+    startupinfo = startupinfo_factory()
+    startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0x00000001)
+    startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+    options["startupinfo"] = startupinfo
+    return options

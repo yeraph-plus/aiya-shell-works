@@ -13,14 +13,14 @@
 | 项目名称 | Shell Worker Platform |
 | 版本 | `CORE_VERSION = "2.0.0"`（`core/version.py`，由 `core/__init__.py` 导出） |
 | Python 要求 | 3.11+ |
-| 入口 | `main.py`（命令行，无 PySide6）+ `main_gui.pyw`（可选桌面） |
+| 入口 | `main.py`（命令行，只执行 YAML，无 PySide6）+ `main_gui.pyw`（可选项目编辑与调度桌面） |
 | 运行时依赖 | PyYAML, watchdog ≥ 6.0, croniter ≥ 6.0, Pillow, pillow-avif-plugin |
 | 可选 GUI 依赖 | PySide6 ≥ 6.9 |
 | 可选 Windows PTY | pywinpty ≥ 2.0 |
 | Linux/macOS PTY | stdlib `pty`（无第三方依赖） |
 | 测试 | pytest ≥ 8.0 |
 
-`core/` 与 GUI 完全解耦，**兼容 Linux 无桌面服务器上以 CLI 模式运行**。`execute_workflow()` 纯函数可在无 GUI 环境下调用，模块通过 `run(ctx, cfg, runtime)` 接收 runtime 而非 GUI 句柄。
+`core/` 与 GUI 完全解耦，**兼容 Linux 无桌面服务器上以 CLI 模式运行**。`execute_workflow()` 纯函数可在无 GUI 环境下调用，模块通过 `run(ctx, cfg, runtime)` 接收 runtime 而非 GUI 句柄。CLI 只加载并执行 YAML；工作流创建、导入和保存属于 GUI 层。
 
 ---
 
@@ -122,7 +122,7 @@ shell-worker/
 │   ├── files.py                # ExecutionWorkspace + UnitWorkspace + WorkspaceFile + 单元构建
 │   ├── config_schema.py        # 8 种参数类型校验
 │   ├── module_manager.py       # 模块扫描、统一契约自检、平台与访问能力
-│   ├── workflow_loader.py      # YAML 加载/保存/校验（atom 可选 GUI 元数据；含 VALID_SCOPES）
+│   ├── workflow_loader.py      # YAML 只读加载/列举/校验（atom 可选 GUI 元数据）
 │   ├── executor.py             # PipelineExecutor，scope=0/1/N 分发 + unit bus 隔离 + 取消检查
 │   ├── scheduler.py            # WorkflowScheduler：并发/监听/定时调度壳
 │   ├── tools.py                # 公用模块助手（collect_file_targets 按工作区清单路由）
@@ -131,8 +131,10 @@ shell-worker/
 ├── gui/                        # 可选桌面层（PySide6）
 │   ├── __init__.py
 │   ├── launcher.py             # 安装后的 GUI 入口
-│   ├── main_window.py
-│   ├── workflow_editor.py
+│   ├── main_window.py          # 项目切换与界面布局
+│   ├── project.py              # 项目路径解析与 QSettings 持久化
+│   ├── workflow_editor.py      # 工作流编辑窗口
+│   ├── workflow_store.py       # GUI 专属 YAML 导入与原子保存
 │   ├── editor/
 │   │   ├── __init__.py
 │   │   ├── info_tab.py
@@ -140,10 +142,11 @@ shell-worker/
 │   │   └── steps_tab.py
 │   └── widgets/
 │       ├── __init__.py
-│       ├── drop_zone.py
+│       ├── config_panel.py
 │       ├── dynamic_form.py
 │       ├── input_panel.py
-│       └── terminal_window.py
+│       ├── execution_controller.py # QThread + WorkflowScheduler 执行控制
+│       └── log_viewer.py            # 内核事件与外部工具输出
 │
 ├── modules/                    # 19 个内置模块，统一使用 WorkspaceFile API
 │   ├── verify_*.py / cycle_counter.py # 默认内核验收模块
@@ -163,7 +166,7 @@ shell-worker/
 │   ├── mock_tool.bat          # 验收与 demo 用 Windows
 │   └── mock_tool.sh           # Linux/macOS
 │
-├── tests/                      # 单测（零 GUI 依赖）
+├── tests/                      # 核心测试 + 独立 gui marker 的可选 GUI 测试
 │   ├── fixtures/
 │   │   └── mock_module.py
 │   ├── test_runtime.py
@@ -177,6 +180,8 @@ shell-worker/
 │   ├── test_scheduler.py
 │   ├── test_cli.py
 │   ├── test_builtin_modules.py
+│   ├── test_gui.py
+│   ├── test_gui_authoring.py
 │   └── test_migration_repairs.py
 │
 └── scripts/
@@ -214,7 +219,7 @@ shell-worker/
                          ▼
                          TerminalSession.run()
                          ▼
-                         bus.log("terminal:output", ...)  → 持久 listener → GUI 终端窗口
+                         bus.log("terminal:output", ...)  → 持久 listener → GUI 主日志区域
                          ▼
                          ctx = _resolve_step_result(...)   ← PipelineContext | None
 ```
@@ -269,6 +274,8 @@ shell-worker/
 | `runtime.request_cancel()` / `is_cancelled()` | 取消控制 |
 | `runtime.set_resuming(bool)` / `is_resuming()` | 恢复控制（预留，executor 当前忽略） |
 
+`spawn()` / `start()` 的 `show_console` 默认为 false。Windows 的 subprocess fallback 使用隐藏窗口启动标志；模块只有在确实需要可见控制台时才显式传 true。PTY/stdout 事件仍通过 EventBus 输出，不依赖独立终端窗口。
+
 ### 3.4 EventBus
 
 **`core/events.py`** — 事件存储与分发。跨步骤数据通过 `ctx.shared` 显式传递，不依赖 EventBus。
@@ -311,6 +318,8 @@ class WorkflowDefinition:
 ```
 
 **YAML 顶层字段**：`meta / scope / steps`（必填）、`atom / recurse`（可选）。`atom` 仅作 GUI 输入面板选择元数据，内核按实际输入推导执行形状。
+
+`WorkflowLoader` 只负责工作流目录内的加载、列举和 schema 校验。`WorkflowAuthoringStore` 位于 `gui/workflow_store.py`，负责外部 YAML 导入、项目目录边界检查、安全文件名和同目录临时文件替换式原子保存。GUI 执行器只把已保存 YAML 路径交给 `WorkflowScheduler`。
 
 ### 3.7 ModuleDefinition
 
@@ -460,6 +469,7 @@ def run(ctx, cfg, runtime):
 - `TerminalSession` 统一提供 `start/wait/write/terminate`；缺失命令抛 `TerminalSpawnError`。
 - `shell=True` 时 Windows 使用 `cmd.exe`，POSIX 使用 `/bin/sh -lc`；默认参数列表直接执行。
 - 全部平台的 stdout 经 EventBus 推送 `terminal:output` 事件，GUI / CLI log sink 自动接收。
+- Windows 默认隐藏 subprocess fallback 的命令窗口；确需可见控制台时传 `show_console=True`。
 
 ### 4.6 模块示例参考
 
@@ -485,6 +495,14 @@ def run(ctx, cfg, runtime):
 | Windows | `ffmpeg-convert`、`pack-rar`、`strip-attributes` | Linux 上验证注册与平台跳过；实际处理仅在 Windows 且相应工具可用时成立 |
 
 “可加载”只表示版本、schema、签名和元数据通过 `ModuleManager`；“可执行”还要求输入形态、当前平台和外部二进制满足模块约束。内核测试不替代外部工具本身的功能测试。
+
+### 4.8 GUI 边界
+
+- `ProjectPaths` 将项目根解析为 `workflows/` 与 `modules/`；`GuiProjectSettings` 通过 `QSettings` 记住当前项目。切换项目时重建 central widget 及其 `ExecutionController`，运行中禁止切换。
+- `WorkflowEditor` 操作 GUI 自身的 `WorkflowDraft`，保存时转为 `WorkflowDefinition` 并交给 `WorkflowAuthoringStore`；内核不接收草稿或控件状态。
+- `ExecutionWorker` 在 `QThread` 中以已保存 YAML 路径构造一次 `WorkflowScheduler.run()` 调用。GUI 不复制 executor 步骤循环，也不启动 `main.py` 子进程。
+- YAML 未提供 `atom` 时，GUI 提供 path/line/none 输入选择；内核仍从提交的实际输入推导 `InputPlan.kind`。
+- EventBus 的普通事件和 `terminal:*` 输出统一进入主日志区域，不维护单独终端窗口。
 
 ---
 
@@ -529,7 +547,8 @@ steps:
 ## 6. 测试
 
 ```bash
-python -m pytest                          # 单测
+python -m pytest -m "not gui"            # 核心/CLI/模块测试，无 PySide6 依赖
+QT_QPA_PLATFORM=offscreen python -m pytest -m gui  # 可选 GUI 测试
 python -m pytest --cov=core --cov-report=json:coverage.json
 python scripts/check_coverage.py coverage.json  # core≥85%，六个关键模块各≥90%
 python scripts/verify.py                  # 端到端验收（6 个工作流）
@@ -538,7 +557,7 @@ python scripts/verify.py                  # 端到端验收（6 个工作流）
 ### 6.1 测试原则
 
 - 内核行为测试与内置模块兼容性冒烟分层：多数 tests 只测内核边界；`test_builtin_modules.py` 只覆盖模块注册、工作区 API 兼容和关键产物，不穷举业务算法。
-- 零 GUI 依赖：tests/ 不 import PySide6，可在安装核心依赖与 pytest 的 Linux CI 跑通。
+- 核心门禁零 GUI 依赖：`-m "not gui"` 不要求 PySide6；GUI 测试使用独立 `gui` marker，并在无显示环境中使用 Qt offscreen 平台。
 - 跨平台 PTY 测试：Linux 覆盖 openpty/Popen，Windows 覆盖 winpty 与 subprocess fallback，共享同一会话契约。
 - 覆盖率门禁：`core` 整体不低于 85%；`context/events/executor/files/runtime/scheduler` 各自不低于 90%。
 - 默认模块验收：`verify.py` 对 `verify_*` 与 `cycle-counter` 的文件内容、命名、摘要、sidecar 与终端事件执行端到端断言。
@@ -554,12 +573,14 @@ python scripts/verify.py                  # 端到端验收（6 个工作流）
 | `test_files.py` | ExecutionWorkspace/UnitWorkspace/WorkspaceFile、owned/reference 清单与冲突命名 |
 | `test_module_manager.py` | access/platforms/scope/签名/schema 校验；重复 slug；parent；rescan |
 | `test_builtin_modules.py` | 19 个内置模块注册；文件链、正则重命名、ZIP 与 Pillow 工作区兼容性 |
-| `test_workflow_loader.py` | YAML 仅接受当前字段；atom 可选；recurse 独立于 atom；保存往返 |
+| `test_workflow_loader.py` | YAML 只读加载/列举/校验；atom 可选；recurse 独立于 atom |
 | `test_config_schema.py` | 8 种参数类型校验 |
 | `test_cli.py` | argparse、退出码、`--list-*`、子进程运行示例、--lines 文本输入 |
 | `test_migration_repairs.py` | 异常失败、干净工作区、glob、监听批次、移动失败保护、异步 PTY |
 | `test_architecture.py` | core 运行时 import 图无环、包级低层 API 边界、scheduler 不依赖 executor 私有符号 |
 | `test_input_inspector_tools.py` | GUI 前置路径检查与模块文件目标路由 |
+| `test_gui_authoring.py` | 无 PySide6 的工作流原子保存、安全路径与外部导入 |
+| `test_gui.py` | 项目设置、输入面板、窗口生命周期、QThread 中 Scheduler YAML 执行与工具日志合并 |
 
 ---
 
@@ -571,7 +592,9 @@ python scripts/verify.py                  # 端到端验收（6 个工作流）
 | 新增 scope 类型 | `module_manager.py:VALID_SCOPES`、`workflow_loader.py:VALID_SCOPES`、`executor._build_units` 加分支 |
 | 新增参数类型 | `config_schema.py` 校验 + `gui/widgets/dynamic_form.py` 渲染 + `gui/editor/state.py:iter_schema_fields/_normalize_field_type` |
 | 新增模块 | `modules/<name>.py` 按第 4 节规范 |
-| 新增工作流 | `workflows/<name>.yaml` 按第 5 节规范 |
-| 改 GUI 输入 UI 推导 | `gui/main_window.py:_update_input_controls` |
+| 新增工作流 | GUI 用 `WorkflowAuthoringStore` 保存，手工文件按第 5 节规范放入 `workflows/` |
+| 改 GUI 输入 UI 推导 | `gui/widgets/execution_controller.py:_sync_input_mode` + `gui/widgets/input_panel.py` |
+| 改 GUI 项目选择 | `gui/project.py` + `gui/launcher.py` + `gui/main_window.py` |
+| 改 GUI 工作流持久化 | `gui/workflow_store.py`，不要给 `core/WorkflowLoader` 增加写入职责 |
 | 改 log 持久化 | `events.py:JSONLFileSink` 或新增实现 `LogSink` Protocol |
 | 改跨平台 PTY | `terminal.py:TerminalSession` 与 `runtime.py:PipelineRuntime.start/spawn` |

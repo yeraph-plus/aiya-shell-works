@@ -2,32 +2,43 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtWidgets import (
+    QFileDialog,
     QHBoxLayout,
     QMainWindow,
+    QMessageBox,
     QVBoxLayout,
     QWidget,
 )
 
+from gui.project import GuiProjectSettings, ProjectPaths
 from gui.widgets.execution_controller import ExecutionController
 
 
 class MainWindow(QMainWindow):
     """Desktop window that lays out the three controller-owned panels."""
 
-    def __init__(self, project_dir: str | Path, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        project_paths: ProjectPaths,
+        *,
+        project_settings: GuiProjectSettings | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
-        self.project_dir = Path(project_dir).resolve()
-        self.workflows_dir = self.project_dir / "workflows"
-        self.modules_dir = self.project_dir / "modules"
+        self._project_settings = project_settings or GuiProjectSettings()
+        self.project_paths = project_paths
 
-        self.setWindowTitle("AIYA Shell Worker Platform")
         self.resize(1200, 800)
 
+        self._build_menu()
         self._build_ui()
         self.statusBar().showMessage("就绪")
+
+    def _build_menu(self) -> None:
+        project_menu = self.menuBar().addMenu("项目")
+        switch_action = project_menu.addAction("切换项目目录")
+        switch_action.triggered.connect(self._choose_project)
 
     def _build_ui(self) -> None:
         central = QWidget(self)
@@ -42,9 +53,9 @@ class MainWindow(QMainWindow):
         left_column.setSpacing(8)
 
         self._controller = ExecutionController(
-            workflows_dir=self.workflows_dir,
-            modules_dir=str(self.modules_dir),
-            parent=self,
+            workflows_dir=self.project_paths.workflows_dir,
+            modules_dir=str(self.project_paths.modules_dir),
+            parent=central,
         )
 
         left_column.addWidget(self._controller.config_panel)
@@ -55,5 +66,27 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self._controller.log_viewer, stretch=1)
 
         self.setCentralWidget(central)
+        self.setWindowTitle(f"AIYA Shell Worker Platform - {self.project_paths.root.name}")
 
         self._controller.status_message.connect(self.statusBar().showMessage)
+
+    def _choose_project(self) -> None:
+        if self._controller.is_running:
+            QMessageBox.warning(self, "任务运行中", "请先停止当前任务，再切换项目目录。")
+            return
+        selected = QFileDialog.getExistingDirectory(self, "选择 Shell Worker 项目目录", str(self.project_paths.root))
+        if not selected:
+            return
+        try:
+            paths = ProjectPaths.from_root(selected)
+        except ValueError as exc:
+            QMessageBox.warning(self, "项目目录无效", str(exc))
+            return
+
+        old_central = self.centralWidget()
+        self.project_paths = paths
+        self._project_settings.remember(paths)
+        self._build_ui()
+        if old_central is not None:
+            old_central.deleteLater()
+        self.statusBar().showMessage(f"已切换项目: {paths.root}")
