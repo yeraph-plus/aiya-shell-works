@@ -22,6 +22,14 @@
 
 `core/` 与 GUI 完全解耦，**兼容 Linux 无桌面服务器上以 CLI 模式运行**。`execute_workflow()` 纯函数可在无 GUI 环境下调用，模块通过 `run(ctx, cfg, runtime)` 接收 runtime 而非 GUI 句柄。CLI 只加载并执行 YAML；工作流创建、导入和保存属于 GUI 层。
 
+### 1.1 v2.0 内核锁定约定
+
+`CORE_VERSION = "2.0.0"` 对应的内核进入维护锁定状态。项目后续演进以新增或维护 `modules/` 与 `workflows/` 为主，默认不修改 `core/`、`main.py`、输入推导、工作区/Context API、executor/scheduler 调度语义或 YAML 顶层 schema。
+
+新增模块必须适配当前稳定契约：导出 `MODULE_META`、`CONFIG_SCHEMA` 和 `run(ctx, cfg, runtime)`；通过 `ctx.current`、`ctx.files()`、`ctx.shared`、`ctx.create_file()`、`ctx.allocate_file()`、`ctx.adopt()` 等 `WorkspaceFile`/`PipelineContext` API 与工作区交互；通过 `runtime.log()`、`runtime.spawn()`、`runtime.start()` 调用控制面能力。模块需求不得反向要求内核增加模块专属分支。
+
+仅在以下情形下允许解除锁定并修改内核：数据丢失、路径安全、并发/取消死锁、跨平台启动失败、安全漏洞，或明确决定引入新的输入类型、配置字段类型、工作区语义、调度语义或 YAML 顶层字段。解除锁定的修改必须同步更新本文档、相关测试和版本说明。
+
 ---
 
 ## 2. 系统设计
@@ -74,6 +82,7 @@
 
 - **scope=1 (per-unit)**：executor 遍历所有输入，为每个输入构造独立 `PipelineContext`，对每个 unit 依次执行全部 steps。不同 unit 之间 EventBus 完全隔离（通过 `runtime.replace_bus()`），ctx.shared 不跨 unit。
 - **scope=0 (shared)**：读写工作流把输入导入最终 `output_dir` 形成合并树；全只读工作流只建立带唯一逻辑相对路径的引用清单。两者都构造唯一一个 `PipelineContext` 并执行全部 steps。
+- **scope=N (N > 1)**：按固定大小分片输入，每个分片独立构造 ctx 与 EventBus。
 
 #### 模块与内核解耦
 
@@ -501,7 +510,7 @@ def run(ctx, cfg, runtime):
 - `ProjectPaths` 将项目根解析为 `workflows/` 与 `modules/`；`GuiProjectSettings` 通过 `QSettings` 记住当前项目。切换项目时重建 central widget 及其 `ExecutionController`，运行中禁止切换。
 - `WorkflowEditor` 操作 GUI 自身的 `WorkflowDraft`，保存时转为 `WorkflowDefinition` 并交给 `WorkflowAuthoringStore`；内核不接收草稿或控件状态。
 - `ExecutionWorker` 在 `QThread` 中以已保存 YAML 路径构造一次 `WorkflowScheduler.run()` 调用。GUI 不复制 executor 步骤循环，也不启动 `main.py` 子进程。
-- YAML 未提供 `atom` 时，GUI 提供 path/line/none 输入选择；内核仍从提交的实际输入推导 `InputPlan.kind`。
+- YAML 未提供 `atom` 时，GUI 提供 file/folder/line/none 输入选择；内核仍从提交的实际输入推导 `InputPlan.kind`。
 - EventBus 的普通事件和 `terminal:*` 输出统一进入主日志区域，不维护单独终端窗口。
 
 ---
